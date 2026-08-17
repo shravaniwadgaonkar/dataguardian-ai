@@ -26,8 +26,11 @@ if uploaded_file is not None:
 
         st.success("Dataset uploaded successfully!")
 
-        # Basic dataset information
         rows, columns = df.shape
+
+        # -------------------------------
+        # DATASET OVERVIEW
+        # -------------------------------
 
         st.subheader("📊 Dataset Overview")
 
@@ -47,15 +50,23 @@ if uploaded_file is not None:
 
         st.divider()
 
-        # Missing values
+        # -------------------------------
+        # DATA QUALITY
+        # -------------------------------
+
         st.subheader("🔍 Data Quality")
 
         missing_values = df.isnull().sum()
         total_missing = missing_values.sum()
 
         if total_missing == 0:
-            st.success("✅ No missing values detected.")
+
+            st.success(
+                "✅ No missing values detected."
+            )
+
         else:
+
             st.warning(
                 f"⚠️ {total_missing} missing values detected."
             )
@@ -74,17 +85,28 @@ if uploaded_file is not None:
                 use_container_width=True
             )
 
-        # Duplicate rows
+        # -------------------------------
+        # DUPLICATES
+        # -------------------------------
+
         duplicates = df.duplicated().sum()
 
         if duplicates > 0:
+
             st.warning(
                 f"⚠️ {duplicates} duplicate rows detected."
             )
-        else:
-            st.success("✅ No duplicate rows detected.")
 
-        # Data types
+        else:
+
+            st.success(
+                "✅ No duplicate rows detected."
+            )
+
+        # -------------------------------
+        # COLUMN INFORMATION
+        # -------------------------------
+
         st.subheader("🧩 Column Information")
 
         column_info = pd.DataFrame({
@@ -102,7 +124,86 @@ if uploaded_file is not None:
             use_container_width=True
         )
 
-        # Dataset preview
+        # -------------------------------
+        # OUTLIER DETECTION
+        # -------------------------------
+
+        st.subheader("🚨 Outlier Detection")
+
+        numeric_columns = df.select_dtypes(
+            include="number"
+        ).columns
+
+        if len(numeric_columns) == 0:
+
+            st.info(
+                "No numerical columns found."
+            )
+
+        else:
+
+            outlier_results = []
+
+            for column in numeric_columns:
+
+                data = df[column].dropna()
+
+                if len(data) > 0:
+
+                    Q1 = data.quantile(0.25)
+                    Q3 = data.quantile(0.75)
+
+                    IQR = Q3 - Q1
+
+                    lower_bound = Q1 - 1.5 * IQR
+                    upper_bound = Q3 + 1.5 * IQR
+
+                    outliers = data[
+                        (data < lower_bound) |
+                        (data > upper_bound)
+                    ]
+
+                    outlier_results.append({
+                        "Column": column,
+                        "Outliers": len(outliers),
+                        "Lower Bound": round(
+                            lower_bound, 2
+                        ),
+                        "Upper Bound": round(
+                            upper_bound, 2
+                        )
+                    })
+
+            outlier_table = pd.DataFrame(
+                outlier_results
+            )
+
+            st.dataframe(
+                outlier_table,
+                use_container_width=True
+            )
+
+            total_outliers = outlier_table[
+                "Outliers"
+            ].sum()
+
+            if total_outliers > 0:
+
+                st.warning(
+                    f"⚠️ {total_outliers} potential "
+                    "outlier values detected."
+                )
+
+            else:
+
+                st.success(
+                    "✅ No potential outliers detected."
+                )
+
+        # -------------------------------
+        # DATASET PREVIEW
+        # -------------------------------
+
         st.subheader("👀 Dataset Preview")
 
         st.dataframe(
@@ -110,14 +211,19 @@ if uploaded_file is not None:
             use_container_width=True
         )
 
-        # Initial health score
+        # -------------------------------
+        # HEALTH SCORE
+        # -------------------------------
+
         st.subheader("🏥 Dataset Health Score")
 
         score = 100
 
         if total_missing > 0:
+
             missing_percentage = (
-                total_missing / (rows * columns)
+                total_missing /
+                (rows * columns)
             ) * 100
 
             score -= min(
@@ -126,12 +232,20 @@ if uploaded_file is not None:
             )
 
         if duplicates > 0:
+
             duplicate_percentage = (
                 duplicates / rows
             ) * 100
 
             score -= min(
                 duplicate_percentage,
+                20
+            )
+
+        if len(numeric_columns) > 0:
+
+            score -= min(
+                total_outliers / rows * 100,
                 20
             )
 
@@ -143,14 +257,19 @@ if uploaded_file is not None:
         )
 
         if score >= 80:
+
             st.success(
                 "🟢 Dataset health looks good."
             )
+
         elif score >= 60:
+
             st.warning(
                 "🟡 Dataset needs some cleaning."
             )
+
         else:
+
             st.error(
                 "🔴 Dataset requires significant cleaning."
             )
