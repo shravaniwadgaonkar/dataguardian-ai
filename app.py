@@ -62,24 +62,6 @@ if uploaded_file is not None:
                 f"⚠️ {total_missing} missing values detected."
             )
 
-            missing_table = pd.DataFrame({
-                "Column": missing_values.index,
-                "Missing Values": missing_values.values
-            })
-
-            missing_table = missing_table[
-                missing_table["Missing Values"] > 0
-            ]
-
-            st.dataframe(
-                missing_table,
-                use_container_width=True
-            )
-
-        # =========================
-        # DUPLICATES
-        # =========================
-
         if duplicates > 0:
             st.warning(
                 f"⚠️ {duplicates} duplicate rows detected."
@@ -119,48 +101,37 @@ if uploaded_file is not None:
         ).columns
 
         total_outliers = 0
+        outlier_results = []
 
-        if len(numeric_columns) == 0:
+        for column in numeric_columns:
 
-            st.info("No numerical columns found.")
+            data = df[column].dropna()
 
-        else:
+            if len(data) > 0:
 
-            outlier_results = []
+                q1 = data.quantile(0.25)
+                q3 = data.quantile(0.75)
+                iqr = q3 - q1
 
-            for column in numeric_columns:
+                lower = q1 - 1.5 * iqr
+                upper = q3 + 1.5 * iqr
 
-                data = df[column].dropna()
+                outliers = data[
+                    (data < lower) |
+                    (data > upper)
+                ]
 
-                if len(data) > 0:
+                count = len(outliers)
+                total_outliers += count
 
-                    q1 = data.quantile(0.25)
-                    q3 = data.quantile(0.75)
+                outlier_results.append({
+                    "Column": column,
+                    "Outliers": count,
+                    "Lower Bound": round(lower, 2),
+                    "Upper Bound": round(upper, 2)
+                })
 
-                    iqr = q3 - q1
-
-                    lower_bound = q1 - 1.5 * iqr
-                    upper_bound = q3 + 1.5 * iqr
-
-                    outliers = data[
-                        (data < lower_bound) |
-                        (data > upper_bound)
-                    ]
-
-                    outlier_count = len(outliers)
-
-                    total_outliers += outlier_count
-
-                    outlier_results.append({
-                        "Column": column,
-                        "Outliers": outlier_count,
-                        "Lower Bound": round(
-                            lower_bound, 2
-                        ),
-                        "Upper Bound": round(
-                            upper_bound, 2
-                        )
-                    })
+        if outlier_results:
 
             outlier_table = pd.DataFrame(
                 outlier_results
@@ -181,8 +152,11 @@ if uploaded_file is not None:
                     "✅ No potential outliers detected."
                 )
 
+        else:
+            st.info("No numerical columns available.")
+
         # =========================
-        # PRIVACY RISK AUDIT
+        # PRIVACY AUDIT
         # =========================
 
         st.subheader("🔐 Privacy Risk Audit")
@@ -237,22 +211,142 @@ if uploaded_file is not None:
                 privacy_risk
             )
 
-            st.info(
-                "Recommendation: Remove, mask, or anonymize "
-                "sensitive information before sharing the dataset."
-            )
-
         else:
+
+            privacy_risk = "LOW"
 
             st.success(
                 "✅ No potentially sensitive column names detected."
             )
 
         st.caption(
-            "Privacy detection is based on column names. "
-            "It is a heuristic and does not guarantee that "
-            "personal information is absent."
+            "Privacy detection is based on column names and "
+            "is a heuristic, not a guarantee."
         )
+
+        # =========================
+        # BIAS AUDIT
+        # =========================
+
+        st.subheader("⚖️ Bias Audit")
+
+        st.write(
+            "Select a group column and an outcome column "
+            "to compare outcome rates between groups."
+        )
+
+        categorical_columns = list(
+            df.select_dtypes(
+                include=["object", "category"]
+            ).columns
+        )
+
+        all_columns = list(df.columns)
+
+        if len(categorical_columns) > 0:
+
+            group_column = st.selectbox(
+                "Group / Protected Attribute",
+                categorical_columns
+            )
+
+            target_column = st.selectbox(
+                "Outcome / Target",
+                all_columns
+            )
+
+            if group_column and target_column:
+
+                unique_targets = df[target_column].dropna().unique()
+
+                if len(unique_targets) == 2:
+
+                    positive_value = st.selectbox(
+                        "Select the positive outcome",
+                        unique_targets
+                    )
+
+                    temp = df[
+                        [group_column, target_column]
+                    ].dropna()
+
+                    temp["positive"] = (
+                        temp[target_column] ==
+                        positive_value
+                    )
+
+                    bias_table = (
+                        temp.groupby(group_column)["positive"]
+                        .agg(["mean", "count"])
+                        .reset_index()
+                    )
+
+                    bias_table["Outcome Rate (%)"] = (
+                        bias_table["mean"] * 100
+                    ).round(2)
+
+                    bias_table = bias_table.drop(
+                        columns=["mean"]
+                    )
+
+                    st.dataframe(
+                        bias_table,
+                        use_container_width=True
+                    )
+
+                    rates = bias_table[
+                        "Outcome Rate (%)"
+                    ]
+
+                    if len(rates) >= 2:
+
+                        disparity = (
+                            rates.max() -
+                            rates.min()
+                        )
+
+                        st.metric(
+                            "Maximum Outcome Rate Difference",
+                            f"{disparity:.2f}%"
+                        )
+
+                        if disparity >= 20:
+
+                            st.error(
+                                "🔴 Large outcome disparity detected."
+                            )
+
+                        elif disparity >= 10:
+
+                            st.warning(
+                                "🟡 Potential outcome disparity detected."
+                            )
+
+                        else:
+
+                            st.success(
+                                "🟢 No large outcome disparity detected."
+                            )
+
+                        st.caption(
+                            "A disparity does not prove discrimination. "
+                            "It indicates that further investigation may "
+                            "be appropriate."
+                        )
+
+                else:
+
+                    st.info(
+                        "Bias analysis currently supports "
+                        "binary outcomes only."
+                    )
+
+        else:
+
+            st.info(
+                "No categorical columns were found, so "
+                "bias analysis cannot be performed automatically."
+            )
 
         # =========================
         # DATASET PREVIEW
@@ -266,14 +360,14 @@ if uploaded_file is not None:
         )
 
         # =========================
-        # DATASET HEALTH SCORE
+        # HEALTH SCORE
         # =========================
 
         st.subheader("🏥 Dataset Health Score")
 
         score = 100.0
 
-        if total_missing > 0:
+        if rows > 0 and columns > 0:
 
             missing_percentage = (
                 total_missing /
@@ -285,7 +379,7 @@ if uploaded_file is not None:
                 30
             )
 
-        if duplicates > 0:
+        if rows > 0:
 
             duplicate_percentage = (
                 duplicates / rows
@@ -296,11 +390,8 @@ if uploaded_file is not None:
                 20
             )
 
-        if rows > 0:
-
             outlier_percentage = (
-                total_outliers /
-                rows
+                total_outliers / rows
             ) * 100
 
             score -= min(
@@ -316,22 +407,49 @@ if uploaded_file is not None:
         )
 
         if score >= 80:
-
-            st.success(
-                "🟢 Dataset health looks good."
-            )
-
+            st.success("🟢 Dataset health looks good.")
         elif score >= 60:
-
-            st.warning(
-                "🟡 Dataset needs some cleaning."
-            )
-
+            st.warning("🟡 Dataset needs some cleaning.")
         else:
-
             st.error(
                 "🔴 Dataset requires significant cleaning."
             )
+
+        # =========================
+        # RECOMMENDATIONS
+        # =========================
+
+        st.subheader("💡 Recommendations")
+
+        recommendations = []
+
+        if total_missing > 0:
+            recommendations.append(
+                "Investigate and handle missing values."
+            )
+
+        if duplicates > 0:
+            recommendations.append(
+                "Review and remove duplicate records if appropriate."
+            )
+
+        if total_outliers > 0:
+            recommendations.append(
+                "Investigate potential outliers before machine learning."
+            )
+
+        if sensitive_columns:
+            recommendations.append(
+                "Consider masking or anonymizing potentially sensitive data."
+            )
+
+        if not recommendations:
+            recommendations.append(
+                "Dataset quality checks look good. Continue with exploratory analysis."
+            )
+
+        for recommendation in recommendations:
+            st.write(f"• {recommendation}")
 
     except Exception as e:
 
