@@ -8,9 +8,7 @@ st.set_page_config(
 )
 
 st.title("🛡️ DataGuardian AI")
-st.write(
-    "Intelligent Dataset Health, Bias & Privacy Auditor"
-)
+st.write("Intelligent Dataset Health, Bias & Privacy Auditor")
 
 st.divider()
 
@@ -27,10 +25,11 @@ if uploaded_file is not None:
         st.success("Dataset uploaded successfully!")
 
         rows, columns = df.shape
+        duplicates = df.duplicated().sum()
 
-        # -------------------------------
+        # =========================
         # DATASET OVERVIEW
-        # -------------------------------
+        # =========================
 
         st.subheader("📊 Dataset Overview")
 
@@ -43,16 +42,13 @@ if uploaded_file is not None:
             st.metric("Columns", columns)
 
         with col3:
-            st.metric(
-                "Duplicate Rows",
-                df.duplicated().sum()
-            )
+            st.metric("Duplicate Rows", duplicates)
 
         st.divider()
 
-        # -------------------------------
+        # =========================
         # DATA QUALITY
-        # -------------------------------
+        # =========================
 
         st.subheader("🔍 Data Quality")
 
@@ -60,13 +56,8 @@ if uploaded_file is not None:
         total_missing = missing_values.sum()
 
         if total_missing == 0:
-
-            st.success(
-                "✅ No missing values detected."
-            )
-
+            st.success("✅ No missing values detected.")
         else:
-
             st.warning(
                 f"⚠️ {total_missing} missing values detected."
             )
@@ -85,27 +76,20 @@ if uploaded_file is not None:
                 use_container_width=True
             )
 
-        # -------------------------------
+        # =========================
         # DUPLICATES
-        # -------------------------------
-
-        duplicates = df.duplicated().sum()
+        # =========================
 
         if duplicates > 0:
-
             st.warning(
                 f"⚠️ {duplicates} duplicate rows detected."
             )
-
         else:
+            st.success("✅ No duplicate rows detected.")
 
-            st.success(
-                "✅ No duplicate rows detected."
-            )
-
-        # -------------------------------
+        # =========================
         # COLUMN INFORMATION
-        # -------------------------------
+        # =========================
 
         st.subheader("🧩 Column Information")
 
@@ -124,9 +108,9 @@ if uploaded_file is not None:
             use_container_width=True
         )
 
-        # -------------------------------
+        # =========================
         # OUTLIER DETECTION
-        # -------------------------------
+        # =========================
 
         st.subheader("🚨 Outlier Detection")
 
@@ -134,11 +118,11 @@ if uploaded_file is not None:
             include="number"
         ).columns
 
+        total_outliers = 0
+
         if len(numeric_columns) == 0:
 
-            st.info(
-                "No numerical columns found."
-            )
+            st.info("No numerical columns found.")
 
         else:
 
@@ -150,22 +134,26 @@ if uploaded_file is not None:
 
                 if len(data) > 0:
 
-                    Q1 = data.quantile(0.25)
-                    Q3 = data.quantile(0.75)
+                    q1 = data.quantile(0.25)
+                    q3 = data.quantile(0.75)
 
-                    IQR = Q3 - Q1
+                    iqr = q3 - q1
 
-                    lower_bound = Q1 - 1.5 * IQR
-                    upper_bound = Q3 + 1.5 * IQR
+                    lower_bound = q1 - 1.5 * iqr
+                    upper_bound = q3 + 1.5 * iqr
 
                     outliers = data[
                         (data < lower_bound) |
                         (data > upper_bound)
                     ]
 
+                    outlier_count = len(outliers)
+
+                    total_outliers += outlier_count
+
                     outlier_results.append({
                         "Column": column,
-                        "Outliers": len(outliers),
+                        "Outliers": outlier_count,
                         "Lower Bound": round(
                             lower_bound, 2
                         ),
@@ -183,26 +171,92 @@ if uploaded_file is not None:
                 use_container_width=True
             )
 
-            total_outliers = outlier_table[
-                "Outliers"
-            ].sum()
-
             if total_outliers > 0:
-
                 st.warning(
                     f"⚠️ {total_outliers} potential "
                     "outlier values detected."
                 )
-
             else:
-
                 st.success(
                     "✅ No potential outliers detected."
                 )
 
-        # -------------------------------
+        # =========================
+        # PRIVACY RISK AUDIT
+        # =========================
+
+        st.subheader("🔐 Privacy Risk Audit")
+
+        sensitive_keywords = [
+            "name",
+            "email",
+            "phone",
+            "mobile",
+            "address",
+            "dob",
+            "date_of_birth",
+            "birth",
+            "aadhaar",
+            "aadhar",
+            "pan",
+            "passport",
+            "pincode",
+            "zip",
+            "postal"
+        ]
+
+        sensitive_columns = []
+
+        for column in df.columns:
+
+            column_name = str(column).lower()
+
+            for keyword in sensitive_keywords:
+
+                if keyword in column_name:
+                    sensitive_columns.append(column)
+                    break
+
+        if sensitive_columns:
+
+            st.warning(
+                f"⚠️ {len(sensitive_columns)} potentially "
+                "sensitive column(s) detected."
+            )
+
+            for column in sensitive_columns:
+                st.write(f"🔒 `{column}`")
+
+            if len(sensitive_columns) >= 3:
+                privacy_risk = "HIGH"
+            else:
+                privacy_risk = "MEDIUM"
+
+            st.metric(
+                "Privacy Risk",
+                privacy_risk
+            )
+
+            st.info(
+                "Recommendation: Remove, mask, or anonymize "
+                "sensitive information before sharing the dataset."
+            )
+
+        else:
+
+            st.success(
+                "✅ No potentially sensitive column names detected."
+            )
+
+        st.caption(
+            "Privacy detection is based on column names. "
+            "It is a heuristic and does not guarantee that "
+            "personal information is absent."
+        )
+
+        # =========================
         # DATASET PREVIEW
-        # -------------------------------
+        # =========================
 
         st.subheader("👀 Dataset Preview")
 
@@ -211,13 +265,13 @@ if uploaded_file is not None:
             use_container_width=True
         )
 
-        # -------------------------------
-        # HEALTH SCORE
-        # -------------------------------
+        # =========================
+        # DATASET HEALTH SCORE
+        # =========================
 
         st.subheader("🏥 Dataset Health Score")
 
-        score = 100
+        score = 100.0
 
         if total_missing > 0:
 
@@ -242,17 +296,22 @@ if uploaded_file is not None:
                 20
             )
 
-        if len(numeric_columns) > 0:
+        if rows > 0:
+
+            outlier_percentage = (
+                total_outliers /
+                rows
+            ) * 100
 
             score -= min(
-                total_outliers / rows * 100,
+                outlier_percentage,
                 20
             )
 
         score = max(0, score)
 
         st.metric(
-            "Health Score",
+            "Overall Dataset Health",
             f"{score:.1f}/100"
         )
 
