@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
-from openai import OpenAI
 
-# =========================
-# PAGE CONFIGURATION
-# =========================
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 st.set_page_config(
     page_title="DataGuardian AI",
@@ -17,20 +17,23 @@ st.write("Intelligent Dataset Health, Bias & Privacy Auditor")
 
 st.divider()
 
-# =========================
+# =====================================================
 # OPENAI CONNECTION
-# =========================
+# =====================================================
 
 client = None
 
-if "OPENAI_API_KEY" in st.secrets:
-    client = OpenAI(
-        api_key=st.secrets["OPENAI_API_KEY"]
-    )
+if OpenAI is not None and "OPENAI_API_KEY" in st.secrets:
+    try:
+        client = OpenAI(
+            api_key=st.secrets["OPENAI_API_KEY"]
+        )
+    except Exception:
+        client = None
 
-# =========================
-# CSV UPLOAD
-# =========================
+# =====================================================
+# UPLOAD
+# =====================================================
 
 uploaded_file = st.file_uploader(
     "Upload a CSV dataset",
@@ -48,16 +51,16 @@ if uploaded_file is not None:
         rows, columns = df.shape
         duplicates = int(df.duplicated().sum())
 
-        # =========================
-        # DATA QUALITY
-        # =========================
+        # =================================================
+        # MISSING VALUES
+        # =================================================
 
         missing_values = df.isnull().sum()
         total_missing = int(missing_values.sum())
 
-        # =========================
-        # OUTLIER DETECTION
-        # =========================
+        # =================================================
+        # OUTLIERS
+        # =================================================
 
         numeric_columns = df.select_dtypes(
             include="number"
@@ -96,9 +99,9 @@ if uploaded_file is not None:
                     "Upper Bound": round(upper, 2)
                 })
 
-        # =========================
-        # PRIVACY DETECTION
-        # =========================
+        # =================================================
+        # PRIVACY
+        # =================================================
 
         sensitive_keywords = [
             "name",
@@ -124,33 +127,27 @@ if uploaded_file is not None:
 
             column_name = str(column).lower()
 
-            for keyword in sensitive_keywords:
-
-                if keyword in column_name:
-
-                    sensitive_columns.append(column)
-
-                    break
+            if any(
+                keyword in column_name
+                for keyword in sensitive_keywords
+            ):
+                sensitive_columns.append(column)
 
         if len(sensitive_columns) >= 3:
-
             privacy_risk = "HIGH"
-
         elif len(sensitive_columns) > 0:
-
             privacy_risk = "MEDIUM"
-
         else:
-
             privacy_risk = "LOW"
 
-        # =========================
-        # HEALTH SCORE
-        # =========================
+        # =================================================
+        # BETTER HEALTH SCORE
+        # =================================================
 
         score = 100.0
 
-        if rows > 0 and columns > 0:
+        # Missing data penalty
+        if rows * columns > 0:
 
             missing_percentage = (
                 total_missing /
@@ -162,6 +159,7 @@ if uploaded_file is not None:
                 30
             )
 
+        # Duplicate penalty
         if rows > 0:
 
             duplicate_percentage = (
@@ -169,24 +167,34 @@ if uploaded_file is not None:
             ) * 100
 
             score -= min(
-                duplicate_percentage,
+                duplicate_percentage * 1.5,
                 20
             )
 
+        # Outlier penalty
+        if rows > 0:
+
             outlier_percentage = (
-                total_outliers / rows
+                total_outliers /
+                (rows * max(len(numeric_columns), 1))
             ) * 100
 
             score -= min(
-                outlier_percentage,
-                20
+                outlier_percentage * 0.5,
+                30
             )
 
-        score = max(0, score)
+        # Privacy penalty
+        if privacy_risk == "HIGH":
+            score -= 15
+        elif privacy_risk == "MEDIUM":
+            score -= 7
 
-        # =========================
+        score = max(0, min(100, score))
+
+        # =================================================
         # DATASET OVERVIEW
-        # =========================
+        # =================================================
 
         st.subheader("📊 Dataset Overview")
 
@@ -204,41 +212,35 @@ if uploaded_file is not None:
                 duplicates
             )
 
-        # =========================
+        # =================================================
         # DATA QUALITY
-        # =========================
+        # =================================================
 
         st.subheader("🔍 Data Quality")
 
         if total_missing == 0:
-
             st.success(
                 "✅ No missing values detected."
             )
-
         else:
-
             st.warning(
                 f"⚠️ {total_missing} "
                 "missing values detected."
             )
 
         if duplicates == 0:
-
             st.success(
                 "✅ No duplicate rows detected."
             )
-
         else:
-
             st.warning(
                 f"⚠️ {duplicates} "
                 "duplicate rows detected."
             )
 
-        # =========================
+        # =================================================
         # COLUMN INFORMATION
-        # =========================
+        # =================================================
 
         st.subheader("🧩 Column Information")
 
@@ -257,9 +259,9 @@ if uploaded_file is not None:
             use_container_width=True
         )
 
-        # =========================
-        # OUTLIER DETECTION
-        # =========================
+        # =================================================
+        # OUTLIERS
+        # =================================================
 
         st.subheader("🚨 Outlier Detection")
 
@@ -275,14 +277,11 @@ if uploaded_file is not None:
             )
 
             if total_outliers > 0:
-
                 st.warning(
                     f"⚠️ {total_outliers} "
                     "potential outlier values detected."
                 )
-
             else:
-
                 st.success(
                     "✅ No potential outliers detected."
                 )
@@ -293,9 +292,9 @@ if uploaded_file is not None:
                 "No numerical columns available."
             )
 
-        # =========================
-        # PRIVACY AUDIT
-        # =========================
+        # =================================================
+        # PRIVACY
+        # =================================================
 
         st.subheader("🔐 Privacy Risk Audit")
 
@@ -307,10 +306,7 @@ if uploaded_file is not None:
             )
 
             for column in sensitive_columns:
-
-                st.write(
-                    f"🔒 `{column}`"
-                )
+                st.write(f"🔒 `{column}`")
 
             st.metric(
                 "Privacy Risk",
@@ -329,9 +325,9 @@ if uploaded_file is not None:
             "and is a heuristic, not a guarantee."
         )
 
-        # =========================
-        # BIAS AUDIT
-        # =========================
+        # =================================================
+        # BIAS
+        # =================================================
 
         st.subheader("⚖️ Bias Audit")
 
@@ -376,8 +372,8 @@ if uploaded_file is not None:
                 ].dropna()
 
                 temp["positive"] = (
-                    temp[target_column] ==
-                    positive_value
+                    temp[target_column]
+                    == positive_value
                 )
 
                 bias_table = (
@@ -416,19 +412,14 @@ if uploaded_file is not None:
                     )
 
                     if bias_disparity >= 20:
-
                         st.error(
                             "🔴 Large outcome disparity detected."
                         )
-
                     elif bias_disparity >= 10:
-
                         st.warning(
                             "🟡 Potential outcome disparity detected."
                         )
-
                     else:
-
                         st.success(
                             "🟢 No large outcome disparity detected."
                         )
@@ -451,42 +442,31 @@ if uploaded_file is not None:
                 "Bias analysis cannot be performed automatically."
             )
 
-        # =========================
+        # =================================================
         # RISK REPORT
-        # =========================
+        # =================================================
 
         st.subheader("🛡️ Dataset Risk Report")
 
-        if score >= 80:
-
-            quality_status = "🟢 Good"
-
-        elif score >= 60:
-
-            quality_status = "🟡 Needs Attention"
-
+        if score >= 85:
+            quality_status = "🟢 Excellent"
+        elif score >= 70:
+            quality_status = "🟡 Good"
+        elif score >= 50:
+            quality_status = "🟠 Needs Attention"
         else:
-
             quality_status = "🔴 Poor"
 
         if total_outliers == 0:
-
             outlier_status = "🟢 Low"
-
         elif total_outliers < rows * 0.10:
-
             outlier_status = "🟡 Moderate"
-
         else:
-
             outlier_status = "🔴 High"
 
         if bias_available:
-
             bias_status = "🟢 Evaluated"
-
         else:
-
             bias_status = "⚪ Not Evaluated"
 
         st.write(
@@ -509,117 +489,304 @@ if uploaded_file is not None:
             f"**Bias Status:** {bias_status}"
         )
 
-        # =========================
+        # =================================================
+        # VISUAL STATISTICS
+        # =================================================
+
+        st.subheader("📈 Dataset Statistics")
+
+        if len(numeric_columns) > 0:
+
+            selected_column = st.selectbox(
+                "Select numerical column",
+                numeric_columns
+            )
+
+            chart_data = df[
+                [selected_column]
+            ].dropna()
+
+            st.line_chart(
+                chart_data
+            )
+
+        # =================================================
         # AI DATA ANALYST
-        # =========================
+        # =================================================
 
         st.subheader("🤖 AI Data Analyst")
 
-        if client is None:
+        if st.button(
+            "Generate AI Analysis"
+        ):
 
-            st.warning(
-                "OpenAI API key is not configured. "
-                "Please add OPENAI_API_KEY to Streamlit Secrets."
-            )
-
-        else:
-
-            if st.button(
-                "Generate AI Analysis"
-            ):
-
-                dataset_summary = f"""
-Dataset name: {uploaded_file.name}
+            dataset_summary = f"""
+Dataset: {uploaded_file.name}
 
 Rows: {rows}
 Columns: {columns}
 
-Column information:
-{column_info.to_string(index=False)}
+Missing values: {total_missing}
 
-Missing values:
-{missing_values.to_string()}
+Duplicate rows: {duplicates}
 
-Duplicate rows:
-{duplicates}
+Potential outliers: {total_outliers}
 
-Potential outliers:
-{total_outliers}
+Sensitive columns: {sensitive_columns}
 
-Potentially sensitive columns:
-{sensitive_columns}
+Privacy risk: {privacy_risk}
 
-Privacy risk:
-{privacy_risk}
+Health score: {score:.1f}/100
 
-Dataset health score:
-{score:.1f}/100
-
-Bias status:
-{bias_status}
-
-Bias disparity:
-{bias_disparity}
+Bias status: {bias_status}
 """
 
-                prompt = f"""
-You are an expert Data Scientist.
+            ai_report = None
+
+            # ---------------------------------------------
+            # TRY REAL AI
+            # ---------------------------------------------
+
+            if client is not None:
+
+                try:
+
+                    with st.spinner(
+                        "🤖 AI is analyzing the dataset..."
+                    ):
+
+                        response = client.responses.create(
+                            model="gpt-5-mini",
+                            input=f"""
+You are a professional Data Scientist.
 
 Analyze this dataset summary:
 
 {dataset_summary}
 
-Create a professional data-quality report.
+Create a concise professional report with:
 
-Use these sections:
-
-## Dataset Overview
-
-## Data Quality Findings
-
-## Outlier Analysis
-
-## Privacy Considerations
-
-## Bias Considerations
-
-## Machine Learning Readiness
-
-## Recommended Actions
+1. Dataset Overview
+2. Data Quality
+3. Outlier Analysis
+4. Privacy
+5. Bias
+6. Machine Learning Readiness
+7. Recommendations
 
 Do not invent information.
-Only make conclusions supported by the supplied data.
-Clearly distinguish detected issues from recommendations.
 """
-
-                try:
-
-                    with st.spinner(
-                        "🤖 AI is analyzing your dataset..."
-                    ):
-
-                        response = client.responses.create(
-                            model="gpt-5-mini",
-                            input=prompt
                         )
 
-                    st.success(
-                        "AI analysis completed!"
+                    ai_report = response.output_text
+
+                except Exception:
+
+                    ai_report = None
+
+            # ---------------------------------------------
+            # FALLBACK ANALYSIS
+            # ---------------------------------------------
+
+            if ai_report is None:
+
+                st.info(
+                    "ℹ️ AI API is unavailable or has no "
+                    "remaining credits. Running DataGuardian's "
+                    "local intelligent analysis instead."
+                )
+
+                report = []
+
+                report.append(
+                    "## 📋 Dataset Overview"
+                )
+
+                report.append(
+                    f"The dataset contains **{rows} rows** "
+                    f"and **{columns} columns**."
+                )
+
+                report.append(
+                    "## 🔍 Data Quality"
+                )
+
+                if total_missing == 0:
+                    report.append(
+                        "No missing values were detected."
+                    )
+                else:
+                    report.append(
+                        f"{total_missing} missing values "
+                        "were detected."
                     )
 
-                    st.markdown(
-                        response.output_text
+                if duplicates == 0:
+                    report.append(
+                        "No duplicate records were detected."
+                    )
+                else:
+                    report.append(
+                        f"{duplicates} duplicate records "
+                        "were detected."
                     )
 
-                except Exception as e:
+                report.append(
+                    "## 🚨 Outlier Analysis"
+                )
 
-                    st.error(
-                        f"AI analysis failed: {e}"
+                if total_outliers > 0:
+
+                    report.append(
+                        f"The system detected "
+                        f"**{total_outliers} potential "
+                        "outlier values**. These should "
+                        "be investigated before model training."
                     )
 
-        # =========================
+                else:
+
+                    report.append(
+                        "No potential outliers were detected."
+                    )
+
+                report.append(
+                    "## 🔐 Privacy"
+                )
+
+                if sensitive_columns:
+
+                    report.append(
+                        "Potentially sensitive columns detected: "
+                        + ", ".join(
+                            map(str, sensitive_columns)
+                        )
+                    )
+
+                else:
+
+                    report.append(
+                        "No potentially sensitive column names "
+                        "were detected."
+                    )
+
+                report.append(
+                    "## ⚖️ Bias"
+                )
+
+                if bias_available:
+
+                    report.append(
+                        "Bias analysis was performed using "
+                        "the available categorical data."
+                    )
+
+                else:
+
+                    report.append(
+                        "Bias analysis could not be "
+                        "performed automatically because "
+                        "no suitable categorical group "
+                        "column was detected."
+                    )
+
+                report.append(
+                    "## 🤖 Machine Learning Readiness"
+                )
+
+                if score >= 85:
+
+                    report.append(
+                        "The dataset appears to be in "
+                        "good condition for initial ML "
+                        "experimentation."
+                    )
+
+                elif score >= 70:
+
+                    report.append(
+                        "The dataset may be usable for ML, "
+                        "but some quality checks should "
+                        "be completed first."
+                    )
+
+                else:
+
+                    report.append(
+                        "The dataset should undergo "
+                        "additional preprocessing before "
+                        "ML training."
+                    )
+
+                report.append(
+                    "## 💡 Recommendations"
+                )
+
+                if total_outliers > 0:
+                    report.append(
+                        "• Investigate potential outliers."
+                    )
+
+                if total_missing > 0:
+                    report.append(
+                        "• Handle missing values."
+                    )
+
+                if duplicates > 0:
+                    report.append(
+                        "• Review duplicate records."
+                    )
+
+                if sensitive_columns:
+                    report.append(
+                        "• Consider anonymizing sensitive data."
+                    )
+
+                report.append(
+                    "• Perform exploratory data analysis "
+                    "before machine-learning training."
+                )
+
+                ai_report = "\n\n".join(report)
+
+            st.markdown(ai_report)
+
+            # =================================================
+            # DOWNLOAD REPORT
+            # =================================================
+
+            report_text = f"""
+DATAGUARDIAN AI
+Dataset Analysis Report
+
+Dataset: {uploaded_file.name}
+
+Rows: {rows}
+Columns: {columns}
+
+Missing Values: {total_missing}
+Duplicate Rows: {duplicates}
+Potential Outliers: {total_outliers}
+
+Privacy Risk: {privacy_risk}
+Overall Health: {score:.1f}/100
+Bias Status: {bias_status}
+
+--------------------------------
+
+{ai_report}
+"""
+
+            st.download_button(
+                "📥 Download Analysis Report",
+                report_text,
+                file_name="DataGuardian_Report.txt",
+                mime="text/plain"
+            )
+
+        # =================================================
         # DATA PREVIEW
-        # =========================
+        # =================================================
 
         st.subheader("👀 Dataset Preview")
 
@@ -628,9 +795,9 @@ Clearly distinguish detected issues from recommendations.
             use_container_width=True
         )
 
-        # =========================
+        # =================================================
         # HEALTH SCORE
-        # =========================
+        # =================================================
 
         st.subheader("🏥 Dataset Health Score")
 
@@ -639,22 +806,31 @@ Clearly distinguish detected issues from recommendations.
             f"{score:.1f}/100"
         )
 
-        if score >= 80:
+        if score >= 85:
 
             st.success(
-                "🟢 Dataset health looks good."
+                "🟢 Dataset health is excellent."
             )
 
-        elif score >= 60:
+        elif score >= 70:
 
             st.warning(
-                "🟡 Dataset needs some cleaning."
+                "🟡 Dataset is usable but "
+                "needs some attention."
+            )
+
+        elif score >= 50:
+
+            st.warning(
+                "🟠 Dataset requires cleaning "
+                "before ML use."
             )
 
         else:
 
             st.error(
-                "🔴 Dataset requires significant cleaning."
+                "🔴 Dataset requires significant "
+                "preprocessing."
             )
 
     except Exception as e:
