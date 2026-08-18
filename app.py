@@ -26,7 +26,7 @@ except ImportError:
 
 
 # =========================================================
-# PAGE
+# PAGE CONFIG
 # =========================================================
 
 st.set_page_config(
@@ -37,7 +37,6 @@ st.set_page_config(
 
 st.title("🛡️ DataGuardian AI")
 st.write("Intelligent Dataset Health, Bias & Privacy Auditor")
-
 st.divider()
 
 
@@ -89,9 +88,7 @@ st.success("Dataset uploaded successfully!")
 
 rows, columns = df.shape
 
-duplicates = int(
-    df.duplicated().sum()
-)
+duplicates = int(df.duplicated().sum())
 
 missing_values = int(
     df.isnull().sum().sum()
@@ -128,11 +125,13 @@ for column in numeric_columns:
     iqr = q3 - q1
 
     if iqr == 0:
+
         count = 0
         lower = q1
         upper = q3
 
     else:
+
         lower = q1 - 1.5 * iqr
         upper = q3 + 1.5 * iqr
 
@@ -245,8 +244,6 @@ else:
 
 score = 100.0
 
-
-# Missing values penalty
 missing_penalty = min(
     missing_percentage * 2,
     25
@@ -255,7 +252,6 @@ missing_penalty = min(
 score -= missing_penalty
 
 
-# Duplicate penalty
 duplicate_penalty = min(
     duplicate_percentage * 2,
     15
@@ -264,7 +260,6 @@ duplicate_penalty = min(
 score -= duplicate_penalty
 
 
-# Outlier penalty
 outlier_penalty = min(
     outlier_burden * 0.8,
     40
@@ -273,7 +268,6 @@ outlier_penalty = min(
 score -= outlier_penalty
 
 
-# Privacy penalty
 if privacy_risk == "HIGH":
 
     score -= 15
@@ -297,7 +291,6 @@ bias_available = False
 bias_status = "⚪ Not Evaluated"
 bias_difference = None
 bias_table = None
-
 
 st.subheader("⚖️ Bias Audit")
 
@@ -721,7 +714,10 @@ if numeric_columns:
     )
 
     series = (
-        df[selected_column]
+        pd.to_numeric(
+            df[selected_column],
+            errors="coerce"
+        )
         .dropna()
     )
 
@@ -759,13 +755,41 @@ if numeric_columns:
 
         st.write("### Distribution")
 
+        histogram_counts, bin_edges = np.histogram(
+            series,
+            bins=12
+        )
+
         histogram_df = pd.DataFrame({
-            "Value": series
+
+            "Range": [
+                f"{bin_edges[i]:.2f} – "
+                f"{bin_edges[i + 1]:.2f}"
+                for i in range(
+                    len(bin_edges) - 1
+                )
+            ],
+
+            "Frequency": histogram_counts
+
         })
 
         st.bar_chart(
-            histogram_df,
+            histogram_df.set_index("Range"),
+            y="Frequency",
             use_container_width=True
+        )
+
+        st.caption(
+            f"Distribution of {selected_column} "
+            f"across {len(series)} valid observations."
+        )
+
+    else:
+
+        st.info(
+            f"No valid numerical values found "
+            f"in {selected_column}."
         )
 
 else:
@@ -940,7 +964,6 @@ for i, recommendation in enumerate(
 def create_pdf_report():
 
     if not REPORTLAB_AVAILABLE:
-
         return None
 
     buffer = BytesIO()
@@ -1063,6 +1086,7 @@ def create_pdf_report():
                 (-1, -1),
                 7
             )
+
         ])
     )
 
@@ -1118,6 +1142,7 @@ def create_pdf_report():
             "Machine Learning Readiness",
             ml_readiness
         )
+
     ]
 
     for heading, body in sections:
@@ -1413,11 +1438,13 @@ Do not invent information.
 
         ai_report = "\n\n".join(report)
 
+
     # =====================================================
     # SHOW AI REPORT
     # =====================================================
 
     st.markdown(ai_report)
+
 
     # =====================================================
     # TEXT DOWNLOAD
