@@ -1,20 +1,11 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from io import BytesIO
 from google import genai
 
-# Optional PDF support
-try:
-    from reportlab.lib.pagesizes import A4
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-    from reportlab.lib.styles import getSampleStyleSheet
-    REPORTLAB = True
-except ImportError:
-    REPORTLAB = False
-
-
 # =========================================================
-# PAGE
+# PAGE CONFIG
 # =========================================================
 
 st.set_page_config(
@@ -25,14 +16,14 @@ st.set_page_config(
 
 st.title("🛡️ DataGuardian AI")
 st.caption(
-    "Intelligent Dataset Health, Bias & Privacy Auditor"
+    "AI Dataset Health, Risk & Intelligent Cleaning Platform"
 )
 
 st.divider()
 
 
 # =========================================================
-# UPLOAD
+# UPLOAD DATASET
 # =========================================================
 
 uploaded_file = st.file_uploader(
@@ -41,1047 +32,859 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is None:
-    st.info("Upload a CSV dataset to start the audit.")
+    st.info("Upload a CSV dataset to begin.")
     st.stop()
 
-
 try:
-    df = pd.read_csv(uploaded_file)
+    original_df = pd.read_csv(uploaded_file)
 except Exception as e:
     st.error(f"Unable to read CSV: {e}")
     st.stop()
 
+# Never modify the original dataset
+df = original_df.copy()
 
 st.success("✅ Dataset uploaded successfully!")
 
 
 # =========================================================
-# BASIC DATASET INFORMATION
+# FUNCTIONS
 # =========================================================
 
-rows, columns = df.shape
+def calculate_outliers(dataframe):
 
-duplicates = int(df.duplicated().sum())
+    total = 0
+    details = []
 
-missing_values = int(
-    df.isnull().sum().sum()
-)
-
-numeric_columns = list(
-    df.select_dtypes(include="number").columns
-)
-
-categorical_columns = list(
-    df.select_dtypes(
-        include=["object", "category", "bool"]
+    numeric_cols = dataframe.select_dtypes(
+        include=np.number
     ).columns
-)
+
+    for col in numeric_cols:
+
+        series = dataframe[col].dropna()
+
+        if len(series) < 4:
+            continue
+
+        q1 = series.quantile(0.25)
+        q3 = series.quantile(0.75)
+        iqr = q3 - q1
+
+        if iqr == 0:
+            count = 0
+        else:
+            lower = q1 - 1.5 * iqr
+            upper = q3 + 1.5 * iqr
+
+            count = int(
+                ((series < lower) |
+                 (series > upper)).sum()
+            )
+
+        total += count
+
+        details.append({
+            "Column": col,
+            "Outliers": count
+        })
+
+    return total, details
 
 
-# =========================================================
-# OUTLIER DETECTION
-# =========================================================
+def dataset_metrics(dataframe):
 
-total_outliers = 0
-outlier_details = []
+    rows, cols = dataframe.shape
 
-for column in numeric_columns:
+    missing = int(
+        dataframe.isnull().sum().sum()
+    )
 
-    data = df[column].dropna()
+    duplicates = int(
+        dataframe.duplicated().sum()
+    )
 
-    if len(data) < 4:
-        continue
+    outliers, details = calculate_outliers(
+        dataframe
+    )
 
-    q1 = data.quantile(0.25)
-    q3 = data.quantile(0.75)
+    return {
+        "rows": rows,
+        "columns": cols,
+        "missing": missing,
+        "duplicates": duplicates,
+        "outliers": outliers,
+        "outlier_details": details
+    }
 
-    iqr = q3 - q1
 
-    if iqr == 0:
-        count = 0
-    else:
+def create_health_score(metrics):
+
+    rows = metrics["rows"]
+
+    if rows == 0:
+        return 0
+
+    cells = (
+        metrics["rows"] *
+        metrics["columns"]
+    )
+
+    missing_pct = (
+        metrics["missing"] /
+        cells * 100
+        if cells else 0
+    )
+
+    duplicate_pct = (
+        metrics["duplicates"] /
+        rows * 100
+    )
+
+    outlier_pct = (
+        metrics["outliers"] /
+        rows * 100
+    )
+
+    score = 100
+
+    score -= min(
+        missing_pct * 2,
+        25
+    )
+
+    score -= min(
+        duplicate_pct * 2,
+        15
+    )
+
+    score -= min(
+        outlier_pct * 0.8,
+        40
+    )
+
+    return round(
+        max(0, min(100, score)),
+        1
+    )
+
+
+def fill_missing_values(dataframe):
+
+    result = dataframe.copy()
+
+    changes = []
+
+    for col in result.columns:
+
+        missing = int(
+            result[col].isnull().sum()
+        )
+
+        if missing == 0:
+            continue
+
+        if pd.api.types.is_numeric_dtype(
+            result[col]
+        ):
+
+            value = result[col].median()
+
+            result[col] = result[col].fillna(
+                value
+            )
+
+            changes.append(
+                f"{col}: {missing} missing values "
+                f"filled with median ({value:.2f})"
+            )
+
+        else:
+
+            mode = result[col].mode()
+
+            if len(mode) > 0:
+
+                value = mode.iloc[0]
+
+                result[col] = result[col].fillna(
+                    value
+                )
+
+                changes.append(
+                    f"{col}: {missing} missing values "
+                    f"filled with most frequent value "
+                    f"'{value}'"
+                )
+
+            else:
+
+                result[col] = result[col].fillna(
+                    "Unknown"
+                )
+
+                changes.append(
+                    f"{col}: {missing} missing values "
+                    "filled with 'Unknown'"
+                )
+
+    return result, changes
+
+
+def remove_duplicates(dataframe):
+
+    result = dataframe.copy()
+
+    before = len(result)
+
+    result = result.drop_duplicates()
+
+    removed = before - len(result)
+
+    return result, removed
+
+
+def cap_outliers(dataframe):
+
+    result = dataframe.copy()
+
+    changes = []
+
+    numeric_cols = result.select_dtypes(
+        include=np.number
+    ).columns
+
+    for col in numeric_cols:
+
+        series = result[col].dropna()
+
+        if len(series) < 4:
+            continue
+
+        q1 = series.quantile(0.25)
+        q3 = series.quantile(0.75)
+
+        iqr = q3 - q1
+
+        if iqr == 0:
+            continue
+
         lower = q1 - 1.5 * iqr
         upper = q3 + 1.5 * iqr
 
-        count = int(
-            ((data < lower) | (data > upper)).sum()
+        mask = (
+            (result[col] < lower) |
+            (result[col] > upper)
         )
 
-    total_outliers += count
+        count = int(mask.sum())
 
-    outlier_details.append({
-        "Column": column,
-        "Outliers": count
-    })
+        if count > 0:
 
+            result[col] = result[col].clip(
+                lower,
+                upper
+            )
 
-# =========================================================
-# PRIVACY AUDIT
-# =========================================================
+            changes.append(
+                f"{col}: capped {count} "
+                "potential outliers using IQR limits"
+            )
 
-privacy_keywords = [
-    "name",
-    "email",
-    "phone",
-    "mobile",
-    "address",
-    "dob",
-    "birth",
-    "aadhaar",
-    "aadhar",
-    "pan",
-    "passport",
-    "pincode",
-    "zip",
-    "postal",
-    "ssn"
-]
-
-sensitive_columns = []
-
-for column in df.columns:
-
-    name = str(column).lower()
-
-    if any(
-        keyword in name
-        for keyword in privacy_keywords
-    ):
-        sensitive_columns.append(column)
-
-
-if len(sensitive_columns) >= 3:
-    privacy_risk = "HIGH"
-elif len(sensitive_columns) > 0:
-    privacy_risk = "MEDIUM"
-else:
-    privacy_risk = "LOW"
+    return result, changes
 
 
 # =========================================================
-# METRICS
+# INITIAL AUDIT
 # =========================================================
 
-total_cells = rows * columns
+before = dataset_metrics(df)
+before_score = create_health_score(before)
 
-missing_percentage = (
-    (missing_values / total_cells) * 100
-    if total_cells > 0 else 0
-)
+st.subheader("📊 Dataset Overview")
 
-duplicate_percentage = (
-    (duplicates / rows) * 100
-    if rows > 0 else 0
-)
+a, b, c, d = st.columns(4)
 
-outlier_percentage = (
-    (total_outliers / rows) * 100
-    if rows > 0 else 0
-)
+with a:
+    st.metric(
+        "Rows",
+        before["rows"]
+    )
+
+with b:
+    st.metric(
+        "Columns",
+        before["columns"]
+    )
+
+with c:
+    st.metric(
+        "Missing Values",
+        before["missing"]
+    )
+
+with d:
+    st.metric(
+        "Duplicates",
+        before["duplicates"]
+    )
 
 
 # =========================================================
 # HEALTH SCORE
 # =========================================================
 
-score = 100.0
+st.subheader("🏥 Current Dataset Health")
 
-score -= min(
-    missing_percentage * 2,
-    25
+st.metric(
+    "Health Score",
+    f"{before_score}/100"
 )
 
-score -= min(
-    duplicate_percentage * 2,
-    15
-)
-
-score -= min(
-    outlier_percentage * 0.8,
-    40
-)
-
-if privacy_risk == "MEDIUM":
-    score -= 7
-
-elif privacy_risk == "HIGH":
-    score -= 15
-
-
-score = max(
-    0,
-    min(100, score)
-)
-
-
-# =========================================================
-# STATUS
-# =========================================================
-
-if score >= 85:
-    quality_status = "🟢 Excellent"
-elif score >= 70:
-    quality_status = "🟡 Good"
-elif score >= 50:
-    quality_status = "🟠 Needs Attention"
-else:
-    quality_status = "🔴 Poor"
-
-
-if total_outliers == 0:
-    outlier_status = "🟢 Low"
-elif outlier_percentage < 5:
-    outlier_status = "🟡 Moderate"
-else:
-    outlier_status = "🔴 High"
-
-
-# =========================================================
-# DATASET OVERVIEW
-# =========================================================
-
-st.subheader("📊 Dataset Overview")
-
-c1, c2, c3 = st.columns(3)
-
-with c1:
-    st.metric("Rows", rows)
-
-with c2:
-    st.metric("Columns", columns)
-
-with c3:
-    st.metric("Duplicate Rows", duplicates)
-
-
-# =========================================================
-# DATA QUALITY
-# =========================================================
-
-st.subheader("🔍 Data Quality")
-
-q1, q2, q3 = st.columns(3)
-
-with q1:
-    st.metric(
-        "Missing Values",
-        missing_values
-    )
-
-with q2:
-    st.metric(
-        "Missing %",
-        f"{missing_percentage:.2f}%"
-    )
-
-with q3:
-    st.metric(
-        "Duplicate %",
-        f"{duplicate_percentage:.2f}%"
-    )
-
-
-if missing_values == 0:
-    st.success("✅ No missing values detected.")
-else:
-    st.warning(
-        f"⚠️ {missing_values} missing values detected."
-    )
-
-
-if duplicates == 0:
-    st.success("✅ No duplicate rows detected.")
-else:
-    st.warning(
-        f"⚠️ {duplicates} duplicate rows detected."
-    )
-
-
-# =========================================================
-# COLUMN INFORMATION
-# =========================================================
-
-st.subheader("🧩 Column Information")
-
-column_info = pd.DataFrame({
-    "Column": df.columns,
-    "Data Type": [
-        str(df[c].dtype)
-        for c in df.columns
-    ],
-    "Missing": [
-        int(df[c].isnull().sum())
-        for c in df.columns
-    ],
-    "Unique": [
-        int(df[c].nunique())
-        for c in df.columns
-    ]
-})
-
-st.dataframe(
-    column_info,
-    use_container_width=True
-)
-
-
-# =========================================================
-# OUTLIERS
-# =========================================================
-
-st.subheader("🚨 Outlier Detection")
-
-if outlier_details:
-
-    outlier_df = pd.DataFrame(
-        outlier_details
-    )
-
-    st.dataframe(
-        outlier_df,
-        use_container_width=True
-    )
-
-    if total_outliers > 0:
-        st.warning(
-            f"⚠️ {total_outliers} potential "
-            "outlier values detected."
-        )
-    else:
-        st.success(
-            "✅ No potential outliers detected."
-        )
-
-else:
-
-    st.info(
-        "No numerical columns available for "
-        "outlier detection."
-    )
-
-
-# =========================================================
-# PRIVACY
-# =========================================================
-
-st.subheader("🔐 Privacy Risk Audit")
-
-if sensitive_columns:
-
-    st.warning(
-        "⚠️ Potentially sensitive columns detected."
-    )
-
-    for column in sensitive_columns:
-        st.write(f"🔒 `{column}`")
-
-else:
-
+if before_score >= 85:
     st.success(
-        "✅ No potentially sensitive "
-        "column names detected."
+        "🟢 Dataset health is excellent."
+    )
+elif before_score >= 70:
+    st.warning(
+        "🟡 Dataset health is good but needs attention."
+    )
+elif before_score >= 50:
+    st.warning(
+        "🟠 Dataset requires preprocessing."
+    )
+else:
+    st.error(
+        "🔴 Dataset requires significant cleaning."
     )
 
-st.caption(
-    "Privacy detection is based on column names "
-    "and is a heuristic, not a guarantee."
+
+# =========================================================
+# CLEANING OPTIONS
+# =========================================================
+
+st.divider()
+
+st.subheader("🧹 AI Data Cleaning Agent")
+
+st.write(
+    "Choose the cleaning operations DataGuardian "
+    "should perform. Your original uploaded dataset "
+    "will never be modified."
+)
+
+fix_missing = st.checkbox(
+    "🔧 Handle missing values",
+    value=True
+)
+
+fix_duplicates = st.checkbox(
+    "🗑️ Remove duplicate rows",
+    value=True
+)
+
+fix_outliers = st.checkbox(
+    "📉 Treat numerical outliers",
+    value=True
 )
 
 
 # =========================================================
-# BIAS AUDIT
+# AI CLEANING
 # =========================================================
 
-st.subheader("⚖️ Bias Audit")
+if st.button(
+    "🤖 Run AI Data Cleaning Agent",
+    type="primary"
+):
 
-bias_status = "⚪ Not Evaluated"
-bias_difference = None
-bias_info = "Bias analysis unavailable."
+    cleaned_df = df.copy()
 
-if categorical_columns:
+    cleaning_log = []
 
-    group_column = st.selectbox(
-        "Select group column",
-        categorical_columns
-    )
+    # -------------------------
+    # Missing Values
+    # -------------------------
 
-    possible_targets = [
-        c for c in df.columns
-        if c != group_column
-    ]
+    if fix_missing:
 
-    target_column = st.selectbox(
-        "Select outcome column",
-        possible_targets
-    )
-
-    unique_values = (
-        df[target_column]
-        .dropna()
-        .unique()
-    )
-
-    if len(unique_values) == 2:
-
-        positive_value = st.selectbox(
-            "Select positive outcome",
-            unique_values
+        cleaned_df, changes = (
+            fill_missing_values(
+                cleaned_df
+            )
         )
 
-        temp = df[
-            [group_column, target_column]
-        ].dropna().copy()
+        cleaning_log.extend(changes)
 
-        temp["positive"] = (
-            temp[target_column]
-            == positive_value
+
+    # -------------------------
+    # Duplicates
+    # -------------------------
+
+    if fix_duplicates:
+
+        cleaned_df, removed = (
+            remove_duplicates(
+                cleaned_df
+            )
         )
 
-        bias_table = (
-            temp
-            .groupby(group_column)["positive"]
-            .mean()
-            .mul(100)
-            .round(2)
-            .reset_index()
-        )
+        if removed > 0:
 
-        bias_table.columns = [
-            group_column,
-            "Outcome Rate (%)"
-        ]
-
-        st.dataframe(
-            bias_table,
-            use_container_width=True
-        )
-
-        if len(bias_table) >= 2:
-
-            bias_difference = (
-                bias_table["Outcome Rate (%)"].max()
-                -
-                bias_table["Outcome Rate (%)"].min()
+            cleaning_log.append(
+                f"Removed {removed} duplicate rows."
             )
 
-            bias_status = "🟢 Evaluated"
+        else:
 
-            if bias_difference >= 20:
+            cleaning_log.append(
+                "No duplicate rows required removal."
+            )
 
-                bias_info = (
-                    "Large outcome disparity detected."
-                )
 
-                st.error(
-                    f"🔴 Outcome difference: "
-                    f"{bias_difference:.2f}%"
-                )
+    # -------------------------
+    # Outliers
+    # -------------------------
 
-            elif bias_difference >= 10:
+    if fix_outliers:
 
-                bias_info = (
-                    "Potential outcome disparity detected."
-                )
+        cleaned_df, changes = (
+            cap_outliers(
+                cleaned_df
+            )
+        )
 
-                st.warning(
-                    f"🟡 Outcome difference: "
-                    f"{bias_difference:.2f}%"
-                )
+        cleaning_log.extend(changes)
 
-            else:
 
-                bias_info = (
-                    "No large outcome disparity detected."
-                )
+    # =====================================================
+    # AFTER AUDIT
+    # =====================================================
 
-                st.success(
-                    f"🟢 Outcome difference: "
-                    f"{bias_difference:.2f}%"
-                )
+    after = dataset_metrics(
+        cleaned_df
+    )
+
+    after_score = create_health_score(
+        after
+    )
+
+
+    # =====================================================
+    # SAVE IN SESSION
+    # =====================================================
+
+    st.session_state["cleaned_df"] = (
+        cleaned_df
+    )
+
+    st.session_state["before"] = before
+    st.session_state["after"] = after
+
+    st.session_state["before_score"] = (
+        before_score
+    )
+
+    st.session_state["after_score"] = (
+        after_score
+    )
+
+    st.session_state["cleaning_log"] = (
+        cleaning_log
+    )
+
+    st.success(
+        "✅ AI Data Cleaning Agent completed."
+    )
+
+
+# =========================================================
+# SHOW RESULTS
+# =========================================================
+
+if "cleaned_df" in st.session_state:
+
+    cleaned_df = st.session_state[
+        "cleaned_df"
+    ]
+
+    before = st.session_state[
+        "before"
+    ]
+
+    after = st.session_state[
+        "after"
+    ]
+
+    before_score = st.session_state[
+        "before_score"
+    ]
+
+    after_score = st.session_state[
+        "after_score"
+    ]
+
+    cleaning_log = st.session_state[
+        "cleaning_log"
+    ]
+
+
+    # =====================================================
+    # BEFORE / AFTER
+    # =====================================================
+
+    st.divider()
+
+    st.subheader(
+        "📈 Before vs After"
+    )
+
+    x1, x2 = st.columns(2)
+
+    with x1:
+
+        st.markdown(
+            "### 🔴 Before Cleaning"
+        )
+
+        st.metric(
+            "Missing",
+            before["missing"]
+        )
+
+        st.metric(
+            "Duplicates",
+            before["duplicates"]
+        )
+
+        st.metric(
+            "Outliers",
+            before["outliers"]
+        )
+
+        st.metric(
+            "Health",
+            f"{before_score}/100"
+        )
+
+
+    with x2:
+
+        st.markdown(
+            "### 🟢 After Cleaning"
+        )
+
+        st.metric(
+            "Missing",
+            after["missing"]
+        )
+
+        st.metric(
+            "Duplicates",
+            after["duplicates"]
+        )
+
+        st.metric(
+            "Outliers",
+            after["outliers"]
+        )
+
+        st.metric(
+            "Health",
+            f"{after_score}/100"
+        )
+
+
+    # =====================================================
+    # HEALTH IMPROVEMENT
+    # =====================================================
+
+    improvement = (
+        after_score -
+        before_score
+    )
+
+    if improvement > 0:
+
+        st.success(
+            f"📈 Dataset health improved by "
+            f"{improvement:.1f} points."
+        )
+
+    elif improvement == 0:
+
+        st.info(
+            "Dataset health score remained unchanged."
+        )
+
+    else:
+
+        st.warning(
+            f"Health score changed by "
+            f"{improvement:.1f} points."
+        )
+
+
+    # =====================================================
+    # CLEANING LOG
+    # =====================================================
+
+    st.subheader(
+        "📝 Cleaning Actions"
+    )
+
+    if cleaning_log:
+
+        for item in cleaning_log:
+
+            st.write(
+                f"✅ {item}"
+            )
 
     else:
 
         st.info(
-            "Select a binary outcome column "
-            "for automatic bias analysis."
+            "No cleaning actions were required."
         )
 
-else:
 
-    st.info(
-        "No categorical columns found. "
-        "Bias analysis cannot be performed automatically."
+    # =====================================================
+    # GEMINI EXPLANATION
+    # =====================================================
+
+    st.divider()
+
+    st.subheader(
+        "✨ Gemini Cleaning Explanation"
+    )
+
+    if st.button(
+        "✨ Ask Gemini to Explain the Cleaning"
+    ):
+
+        if "GEMINI_API_KEY" not in st.secrets:
+
+            st.error(
+                "GEMINI_API_KEY is missing. "
+                "Add it in Streamlit Secrets."
+            )
+
+        else:
+
+            try:
+
+                client = genai.Client(
+                    api_key=st.secrets[
+                        "GEMINI_API_KEY"
+                    ]
+                )
+
+                prompt = f"""
+You are DataGuardian AI,
+a professional data governance assistant.
+
+A dataset was cleaned by an automated
+data cleaning pipeline.
+
+BEFORE:
+
+Rows: {before["rows"]}
+Columns: {before["columns"]}
+Missing values: {before["missing"]}
+Duplicates: {before["duplicates"]}
+Potential outliers: {before["outliers"]}
+Health score: {before_score}/100
+
+AFTER:
+
+Rows: {after["rows"]}
+Columns: {after["columns"]}
+Missing values: {after["missing"]}
+Duplicates: {after["duplicates"]}
+Potential outliers: {after["outliers"]}
+Health score: {after_score}/100
+
+CLEANING ACTIONS:
+
+{cleaning_log}
+
+Explain:
+
+1. What changed?
+2. Why were these cleaning operations reasonable?
+3. What risks remain?
+4. Is the dataset more suitable for ML now?
+5. What should a data scientist inspect manually?
+
+Do not invent information.
+Clearly distinguish automated cleaning
+from recommendations requiring human review.
+"""
+
+                with st.spinner(
+                    "Gemini is reviewing the cleaning..."
+                ):
+
+                    response = client.models.generate_content(
+                        model="gemini-3.6-flash",
+                        contents=prompt
+                    )
+
+                st.success(
+                    "✅ Gemini explanation generated."
+                )
+
+                st.markdown(
+                    response.text
+                )
+
+                st.session_state[
+                    "gemini_cleaning_report"
+                ] = response.text
+
+            except Exception as e:
+
+                st.error(
+                    "Gemini analysis failed."
+                )
+
+                st.code(
+                    str(e)
+                )
+
+
+    # =====================================================
+    # DOWNLOAD CLEANED DATASET
+    # =====================================================
+
+    st.divider()
+
+    st.subheader(
+        "📥 Download Cleaned Dataset"
+    )
+
+    csv_data = cleaned_df.to_csv(
+        index=False
+    ).encode("utf-8")
+
+    st.download_button(
+        "📥 Download cleaned_dataset.csv",
+        csv_data,
+        file_name="cleaned_dataset.csv",
+        mime="text/csv"
+    )
+
+
+    # =====================================================
+    # CLEANED PREVIEW
+    # =====================================================
+
+    st.subheader(
+        "👀 Cleaned Dataset Preview"
+    )
+
+    st.dataframe(
+        cleaned_df.head(10),
+        use_container_width=True
+    )
+
+
+    # =====================================================
+    # FINAL REPORT
+    # =====================================================
+
+    st.divider()
+
+    st.subheader(
+        "📋 Cleaning Summary"
+    )
+
+    report = f"""
+DATAGUARDIAN AI
+AI DATA CLEANING REPORT
+
+Original Dataset
+----------------
+Rows: {before["rows"]}
+Columns: {before["columns"]}
+Missing Values: {before["missing"]}
+Duplicates: {before["duplicates"]}
+Potential Outliers: {before["outliers"]}
+Health Score: {before_score}/100
+
+Cleaned Dataset
+---------------
+Rows: {after["rows"]}
+Columns: {after["columns"]}
+Missing Values: {after["missing"]}
+Duplicates: {after["duplicates"]}
+Potential Outliers: {after["outliers"]}
+Health Score: {after_score}/100
+
+Health Improvement:
+{improvement:.1f} points
+
+Cleaning Actions:
+"""
+
+    for item in cleaning_log:
+
+        report += (
+            f"\n- {item}"
+        )
+
+
+    if (
+        "gemini_cleaning_report"
+        in st.session_state
+    ):
+
+        report += """
+
+GEMINI REVIEW
+=============
+
+"""
+
+        report += (
+            st.session_state[
+                "gemini_cleaning_report"
+            ]
+        )
+
+
+    st.download_button(
+        "📄 Download Cleaning Report",
+        report,
+        file_name="DataGuardian_Cleaning_Report.txt",
+        mime="text/plain"
     )
 
 
 # =========================================================
-# RISK REPORT
-# =========================================================
-
-st.subheader("🛡️ Dataset Risk Report")
-
-r1, r2, r3, r4 = st.columns(4)
-
-with r1:
-    st.metric(
-        "Health",
-        f"{score:.1f}/100"
-    )
-
-with r2:
-    st.metric(
-        "Data Quality",
-        quality_status
-    )
-
-with r3:
-    st.metric(
-        "Outlier Risk",
-        outlier_status
-    )
-
-with r4:
-    st.metric(
-        "Privacy Risk",
-        privacy_risk
-    )
-
-st.write(
-    f"**⚖️ Bias Status:** {bias_status}"
-)
-
-
-# =========================================================
-# ML READINESS
-# =========================================================
-
-if score >= 85:
-    ml_readiness = (
-        "🟢 Ready for initial ML experiments"
-    )
-elif score >= 70:
-    ml_readiness = (
-        "🟡 Usable after preprocessing"
-    )
-elif score >= 50:
-    ml_readiness = (
-        "🟠 Needs significant preprocessing"
-    )
-else:
-    ml_readiness = (
-        "🔴 Requires significant cleaning"
-    )
-
-st.write(
-    f"**🤖 ML Readiness:** {ml_readiness}"
-)
-
-
-# =========================================================
-# RECOMMENDATIONS
-# =========================================================
-
-recommendations = []
-
-if missing_values > 0:
-    recommendations.append(
-        "Handle missing values before ML training."
-    )
-
-if duplicates > 0:
-    recommendations.append(
-        "Review and remove unnecessary duplicate records."
-    )
-
-if total_outliers > 0:
-    recommendations.append(
-        "Investigate detected outliers before model training."
-    )
-
-if sensitive_columns:
-    recommendations.append(
-        "Review, anonymize or remove sensitive columns."
-    )
-
-if bias_difference is not None and bias_difference >= 10:
-    recommendations.append(
-        "Investigate group-level outcome disparities."
-    )
-
-recommendations.append(
-    "Perform exploratory data analysis before production ML use."
-)
-
-st.subheader("💡 Recommendations")
-
-for item in recommendations:
-    st.write(f"• {item}")
-
-
-# =========================================================
-# GOOGLE GEMINI AI
+# ORIGINAL DATA PREVIEW
 # =========================================================
 
 st.divider()
 
-st.subheader("✨ Google Gemini AI Analyst")
-
-st.write(
-    "Gemini interprets DataGuardian's measured audit "
-    "results and generates an explainable AI report."
+st.subheader(
+    "👀 Original Dataset Preview"
 )
 
-
-if st.button(
-    "✨ Analyze Dataset with Gemini",
-    type="primary"
-):
-
-    if "GEMINI_API_KEY" not in st.secrets:
-
-        st.error(
-            "GEMINI_API_KEY is missing. "
-            "Add it in Streamlit → Manage app → Settings → Secrets."
-        )
-
-    else:
-
-        try:
-
-            client = genai.Client(
-                api_key=st.secrets[
-                    "GEMINI_API_KEY"
-                ]
-            )
-
-            audit_data = f"""
-DATASET AUDIT RESULTS
-
-Dataset: {uploaded_file.name}
-
-Rows: {rows}
-Columns: {columns}
-
-Missing Values: {missing_values}
-Missing Percentage: {missing_percentage:.2f}%
-
-Duplicate Rows: {duplicates}
-Duplicate Percentage: {duplicate_percentage:.2f}%
-
-Potential Outliers: {total_outliers}
-Outlier Percentage: {outlier_percentage:.2f}%
-
-Data Quality: {quality_status}
-Outlier Risk: {outlier_status}
-
-Privacy Risk: {privacy_risk}
-
-Sensitive Columns:
-{sensitive_columns}
-
-Bias Status: {bias_status}
-
-Bias Finding:
-{bias_info}
-
-Bias Difference:
-{bias_difference}
-
-Overall Health Score:
-{score:.1f}/100
-
-Machine Learning Readiness:
-{ml_readiness}
-
-Recommendations:
-{recommendations}
-"""
-
-            prompt = f"""
-You are DataGuardian AI,
-an expert dataset governance analyst.
-
-Analyze ONLY the evidence provided below.
-
-Do not invent facts.
-
-Separate measured findings from your interpretation.
-
-{audit_data}
-
-Create a professional report with:
-
-## 🧠 Executive Summary
-
-## 🚨 Key Risks
-
-## 🔍 Data Quality Analysis
-
-## 📊 Outlier Analysis
-
-## 🔐 Privacy Analysis
-
-## ⚖️ Bias Analysis
-
-## 🤖 Machine Learning Readiness
-
-## 💡 Priority Recommendations
-
-Give exactly 5 practical recommendations.
-
-For each recommendation include:
-- Priority
-- Action
-- Reason
-
-## 🏁 Final Risk Level
-
-Choose exactly one:
-
-LOW
-MEDIUM
-HIGH
-CRITICAL
-
-Explain the decision.
-
-Important:
-Privacy detection is based on column names and
-does NOT prove that personal information is absent.
-
-Bias analysis may be incomplete if suitable
-group and outcome data is unavailable.
-"""
-
-            with st.spinner(
-                "✨ Gemini is analyzing your dataset..."
-            ):
-
-                response = client.models.generate_content(
-                    model="gemini-3.6-flash",
-                    contents=prompt
-                )
-
-            st.success(
-                "✅ Gemini analysis completed."
-            )
-
-            st.markdown(
-                response.text
-            )
-
-            gemini_report = f"""
-DATAGUARDIAN AI
-GOOGLE GEMINI ANALYSIS REPORT
-
-Dataset: {uploaded_file.name}
-
-Health Score: {score:.1f}/100
-
-Data Quality: {quality_status}
-
-Outlier Risk: {outlier_status}
-
-Privacy Risk: {privacy_risk}
-
-Bias Status: {bias_status}
-
-ML Readiness: {ml_readiness}
-
-================================
-
-GEMINI ANALYSIS
-
-{response.text}
-"""
-
-            st.download_button(
-                "📥 Download Gemini Report",
-                gemini_report,
-                file_name="DataGuardian_Gemini_Report.txt",
-                mime="text/plain"
-            )
-
-        except Exception as e:
-
-            st.error(
-                "Gemini analysis failed."
-            )
-
-            st.code(
-                str(e)
-            )
-
-
-# =========================================================
-# DATASET PREVIEW
-# =========================================================
-
-st.subheader("👀 Dataset Preview")
-
 st.dataframe(
-    df.head(10),
+    original_df.head(10),
     use_container_width=True
 )
 
 
 # =========================================================
-# STATISTICS
-# =========================================================
-
-st.subheader("📈 Dataset Statistics")
-
-if numeric_columns:
-
-    selected_column = st.selectbox(
-        "Select numerical column",
-        numeric_columns
-    )
-
-    series = df[
-        selected_column
-    ].dropna()
-
-    if len(series) > 0:
-
-        a, b, c, d = st.columns(4)
-
-        with a:
-            st.metric(
-                "Minimum",
-                f"{series.min():.2f}"
-            )
-
-        with b:
-            st.metric(
-                "Maximum",
-                f"{series.max():.2f}"
-            )
-
-        with c:
-            st.metric(
-                "Mean",
-                f"{series.mean():.2f}"
-            )
-
-        with d:
-            st.metric(
-                "Median",
-                f"{series.median():.2f}"
-            )
-
-        histogram = pd.DataFrame(
-            {
-                "Value": series
-            }
-        )
-
-        st.bar_chart(
-            histogram["Value"]
-            .value_counts()
-            .sort_index()
-        )
-
-else:
-
-    st.info(
-        "No numerical columns available."
-    )
-
-
-# =========================================================
-# TEXT REPORT
-# =========================================================
-
-text_report = f"""
-DATAGUARDIAN AI
-DATASET RISK REPORT
-
-Dataset:
-{uploaded_file.name}
-
-Rows:
-{rows}
-
-Columns:
-{columns}
-
-Missing Values:
-{missing_values}
-
-Duplicate Rows:
-{duplicates}
-
-Potential Outliers:
-{total_outliers}
-
-Privacy Risk:
-{privacy_risk}
-
-Bias Status:
-{bias_status}
-
-ML Readiness:
-{ml_readiness}
-
-Overall Health:
-{score:.1f}/100
-
-RECOMMENDATIONS
-
-"""
-
-for i, item in enumerate(
-    recommendations,
-    1
-):
-
-    text_report += (
-        f"{i}. {item}\n"
-    )
-
-
-st.download_button(
-    "📄 Download Text Report",
-    text_report,
-    file_name="DataGuardian_Report.txt",
-    mime="text/plain"
-)
-
-
-# =========================================================
-# PDF REPORT
-# =========================================================
-
-if REPORTLAB:
-
-    def create_pdf():
-
-        buffer = BytesIO()
-
-        doc = SimpleDocTemplate(
-            buffer,
-            pagesize=A4
-        )
-
-        styles = getSampleStyleSheet()
-
-        story = []
-
-        story.append(
-            Paragraph(
-                "DataGuardian AI",
-                styles["Title"]
-            )
-        )
-
-        story.append(
-            Paragraph(
-                "Dataset Risk Report",
-                styles["Heading2"]
-            )
-        )
-
-        story.append(
-            Spacer(1, 15)
-        )
-
-        report_lines = [
-            f"Dataset: {uploaded_file.name}",
-            f"Rows: {rows}",
-            f"Columns: {columns}",
-            f"Missing Values: {missing_values}",
-            f"Duplicate Rows: {duplicates}",
-            f"Potential Outliers: {total_outliers}",
-            f"Privacy Risk: {privacy_risk}",
-            f"Bias Status: {bias_status}",
-            f"ML Readiness: {ml_readiness}",
-            f"Health Score: {score:.1f}/100"
-        ]
-
-        for line in report_lines:
-
-            story.append(
-                Paragraph(
-                    line,
-                    styles["BodyText"]
-                )
-            )
-
-            story.append(
-                Spacer(1, 5)
-            )
-
-        story.append(
-            Spacer(1, 10)
-        )
-
-        story.append(
-            Paragraph(
-                "Recommendations",
-                styles["Heading2"]
-            )
-        )
-
-        for item in recommendations:
-
-            story.append(
-                Paragraph(
-                    "• " + item,
-                    styles["BodyText"]
-                )
-            )
-
-        doc.build(story)
-
-        buffer.seek(0)
-
-        return buffer.getvalue()
-
-
-    pdf_data = create_pdf()
-
-    st.download_button(
-        "📄 Download Professional PDF Report",
-        pdf_data,
-        file_name="DataGuardian_Risk_Report.pdf",
-        mime="application/pdf"
-    )
-
-
-# =========================================================
-# FINAL HEALTH SCORE
+# FOOTER
 # =========================================================
 
 st.divider()
 
-st.subheader("🏥 Dataset Health Score")
-
-st.metric(
-    "Overall Dataset Health",
-    f"{score:.1f}/100"
+st.caption(
+    "🛡️ DataGuardian AI — AI-assisted dataset "
+    "quality, privacy, bias and machine-learning "
+    "readiness auditing."
 )
-
-if score >= 85:
-
-    st.success(
-        "🟢 Dataset health is excellent."
-    )
-
-elif score >= 70:
-
-    st.warning(
-        "🟡 Dataset health is good but needs some attention."
-    )
-
-elif score >= 50:
-
-    st.warning(
-        "🟠 Dataset requires preprocessing."
-    )
-
-else:
-
-    st.error(
-        "🔴 Dataset requires significant cleaning."
-    )
