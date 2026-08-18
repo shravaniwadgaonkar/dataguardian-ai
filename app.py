@@ -2,9 +2,10 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 
-# =========================================================
-# OPTIONAL REPORTLAB
-# =========================================================
+# Google Gemini
+from google import genai
+
+# Optional PDF
 try:
     from reportlab.lib.pagesizes import A4
     from reportlab.platypus import (
@@ -17,14 +18,17 @@ try:
     from reportlab.lib import colors
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.enums import TA_CENTER
+
     REPORTLAB_AVAILABLE = True
+
 except ImportError:
     REPORTLAB_AVAILABLE = False
 
 
 # =========================================================
-# PAGE
+# PAGE CONFIG
 # =========================================================
+
 st.set_page_config(
     page_title="DataGuardian AI",
     page_icon="🛡️",
@@ -32,48 +36,71 @@ st.set_page_config(
 )
 
 st.title("🛡️ DataGuardian AI")
-st.write("Intelligent Dataset Health, Bias & Privacy Auditor")
+st.write(
+    "Intelligent Dataset Health, Bias & Privacy Auditor"
+)
+
 st.divider()
 
 
 # =========================================================
-# UPLOAD
+# UPLOAD DATASET
 # =========================================================
+
 uploaded_file = st.file_uploader(
     "Upload a CSV dataset",
     type=["csv"]
 )
 
 if uploaded_file is None:
-    st.info("👆 Upload a CSV dataset to begin your analysis.")
+
+    st.info(
+        "👆 Upload a CSV dataset to begin your analysis."
+    )
+
     st.stop()
 
 
 # =========================================================
-# READ DATA
+# READ CSV
 # =========================================================
+
 try:
+
     df = pd.read_csv(uploaded_file)
+
 except Exception as e:
-    st.error(f"Unable to read CSV: {e}")
+
+    st.error(
+        f"Unable to read CSV: {e}"
+    )
+
     st.stop()
 
-st.success("Dataset uploaded successfully!")
+
+st.success(
+    "Dataset uploaded successfully!"
+)
 
 
 # =========================================================
 # BASIC INFORMATION
 # =========================================================
+
 rows, columns = df.shape
 
-duplicates = int(df.duplicated().sum())
+duplicates = int(
+    df.duplicated().sum()
+)
 
 missing_values = int(
     df.isnull().sum().sum()
 )
 
 numeric_columns = list(
-    df.select_dtypes(include="number").columns
+    df.select_dtypes(
+        include="number"
+    ).columns
 )
 
 categorical_columns = list(
@@ -86,7 +113,9 @@ categorical_columns = list(
 # =========================================================
 # OUTLIER DETECTION
 # =========================================================
+
 total_outliers = 0
+
 outlier_results = []
 
 for column in numeric_columns:
@@ -97,124 +126,176 @@ for column in numeric_columns:
         continue
 
     q1 = data.quantile(0.25)
+
     q3 = data.quantile(0.75)
 
     iqr = q3 - q1
 
     if iqr == 0:
+
         count = 0
+
         lower = q1
+
         upper = q3
+
     else:
+
         lower = q1 - 1.5 * iqr
+
         upper = q3 + 1.5 * iqr
 
         count = int(
-            ((data < lower) | (data > upper)).sum()
+            (
+                (data < lower)
+                |
+                (data > upper)
+            ).sum()
         )
 
     total_outliers += count
 
-    outlier_results.append({
-        "Column": column,
-        "Outliers": count,
-        "Lower Bound": round(lower, 2),
-        "Upper Bound": round(upper, 2)
-    })
+    outlier_results.append(
+        {
+            "Column": column,
+            "Outliers": count,
+            "Lower Bound": round(
+                lower, 2
+            ),
+            "Upper Bound": round(
+                upper, 2
+            )
+        }
+    )
 
 
 # =========================================================
 # PRIVACY AUDIT
 # =========================================================
+
 sensitive_keywords = [
-    "name", "email", "phone", "mobile",
-    "address", "dob", "birth", "aadhaar",
-    "aadhar", "pan", "passport",
-    "pincode", "zip", "postal"
+    "name",
+    "email",
+    "phone",
+    "mobile",
+    "address",
+    "dob",
+    "birth",
+    "aadhaar",
+    "aadhar",
+    "pan",
+    "passport",
+    "pincode",
+    "zip",
+    "postal"
 ]
 
 sensitive_columns = []
 
 for column in df.columns:
 
-    column_name = str(column).lower()
+    column_name = str(
+        column
+    ).lower()
 
     if any(
         keyword in column_name
         for keyword in sensitive_keywords
     ):
-        sensitive_columns.append(column)
+
+        sensitive_columns.append(
+            column
+        )
 
 
 if len(sensitive_columns) >= 3:
+
     privacy_risk = "HIGH"
+
 elif len(sensitive_columns) > 0:
+
     privacy_risk = "MEDIUM"
+
 else:
+
     privacy_risk = "LOW"
 
 
 # =========================================================
 # PERCENTAGES
 # =========================================================
+
 if rows > 0 and columns > 0:
 
     missing_percentage = (
-        missing_values / (rows * columns)
+        missing_values
+        /
+        (rows * columns)
     ) * 100
 
 else:
+
     missing_percentage = 0
 
 
 if rows > 0:
 
     duplicate_percentage = (
-        duplicates / rows
+        duplicates
+        /
+        rows
     ) * 100
-
-else:
-    duplicate_percentage = 0
-
-
-if rows > 0:
 
     outlier_burden = (
-        total_outliers / rows
+        total_outliers
+        /
+        rows
     ) * 100
 
 else:
+
+    duplicate_percentage = 0
+
     outlier_burden = 0
 
 
 # =========================================================
 # HEALTH SCORE
 # =========================================================
+
 score = 100.0
 
-# Missing penalty
+
+# Missing values
 score -= min(
     missing_percentage * 2,
     25
 )
 
-# Duplicate penalty
+
+# Duplicates
 score -= min(
     duplicate_percentage * 2,
     15
 )
 
-# Outlier penalty
+
+# Outliers
 score -= min(
     outlier_burden * 0.8,
     40
 )
 
-# Privacy penalty
+
+# Privacy
 if privacy_risk == "HIGH":
+
     score -= 15
+
 elif privacy_risk == "MEDIUM":
+
     score -= 7
+
 
 score = max(
     0,
@@ -225,50 +306,89 @@ score = max(
 # =========================================================
 # STATUS
 # =========================================================
+
 if score >= 85:
+
     quality_status = "🟢 Excellent"
+
 elif score >= 70:
+
     quality_status = "🟡 Good"
+
 elif score >= 50:
+
     quality_status = "🟠 Needs Attention"
+
 else:
+
     quality_status = "🔴 Poor"
 
 
 if total_outliers == 0:
+
     outlier_status = "🟢 Low"
+
 elif outlier_burden < 5:
+
     outlier_status = "🟡 Moderate"
+
 else:
+
     outlier_status = "🔴 High"
 
 
 if privacy_risk == "LOW":
+
     privacy_display = "🟢 Low"
+
 elif privacy_risk == "MEDIUM":
+
     privacy_display = "🟡 Medium"
+
 else:
+
     privacy_display = "🔴 High"
 
 
 if score >= 85:
-    ml_readiness = "🟢 Ready for initial ML experiments"
+
+    ml_readiness = (
+        "🟢 Ready for initial ML experiments"
+    )
+
 elif score >= 70:
-    ml_readiness = "🟡 Usable after preprocessing"
+
+    ml_readiness = (
+        "🟡 Usable after preprocessing"
+    )
+
 elif score >= 50:
-    ml_readiness = "🟠 Needs significant preprocessing"
+
+    ml_readiness = (
+        "🟠 Needs significant preprocessing"
+    )
+
 else:
-    ml_readiness = "🔴 Not recommended before cleaning"
+
+    ml_readiness = (
+        "🔴 Not recommended before cleaning"
+    )
 
 
 # =========================================================
 # BIAS AUDIT
 # =========================================================
+
 bias_available = False
+
 bias_status = "⚪ Not Evaluated"
+
 bias_difference = None
 
+bias_table = None
+
 st.subheader("⚖️ Bias Audit")
+
 
 if categorical_columns:
 
@@ -291,6 +411,7 @@ if categorical_columns:
     if len(unique_values) == 2:
 
         bias_available = True
+
         bias_status = "🟢 Evaluated"
 
         positive_value = st.selectbox(
@@ -299,11 +420,15 @@ if categorical_columns:
         )
 
         temp = df[
-            [group_column, target_column]
+            [
+                group_column,
+                target_column
+            ]
         ].dropna().copy()
 
         temp["positive"] = (
-            temp[target_column] == positive_value
+            temp[target_column]
+            == positive_value
         )
 
         bias_table = (
@@ -328,9 +453,13 @@ if categorical_columns:
         if len(bias_table) >= 2:
 
             bias_difference = (
-                bias_table["Outcome Rate (%)"].max()
+                bias_table[
+                    "Outcome Rate (%)"
+                ].max()
                 -
-                bias_table["Outcome Rate (%)"].min()
+                bias_table[
+                    "Outcome Rate (%)"
+                ].min()
             )
 
             st.metric(
@@ -339,14 +468,19 @@ if categorical_columns:
             )
 
             if bias_difference >= 20:
+
                 st.error(
                     "🔴 Large outcome disparity detected."
                 )
+
             elif bias_difference >= 10:
+
                 st.warning(
                     "🟡 Potential outcome disparity detected."
                 )
+
             else:
+
                 st.success(
                     "🟢 No large outcome disparity detected."
                 )
@@ -368,33 +502,45 @@ else:
 # =========================================================
 # RISK REPORT
 # =========================================================
-st.subheader("🛡️ Dataset Risk Report")
+
+st.subheader(
+    "🛡️ Dataset Risk Report"
+)
 
 r1, r2, r3, r4 = st.columns(4)
 
+
 with r1:
+
     st.metric(
         "Overall Health",
         f"{score:.1f}/100"
     )
 
+
 with r2:
+
     st.metric(
         "Data Quality",
         quality_status
     )
 
+
 with r3:
+
     st.metric(
         "Outlier Risk",
         outlier_status
     )
 
+
 with r4:
+
     st.metric(
         "Privacy Risk",
         privacy_display
     )
+
 
 st.write(
     f"**⚖️ Bias Status:** {bias_status}"
@@ -408,17 +554,32 @@ st.write(
 # =========================================================
 # DATASET OVERVIEW
 # =========================================================
-st.subheader("📊 Dataset Overview")
+
+st.subheader(
+    "📊 Dataset Overview"
+)
 
 c1, c2, c3 = st.columns(3)
 
+
 with c1:
-    st.metric("Rows", rows)
+
+    st.metric(
+        "Rows",
+        rows
+    )
+
 
 with c2:
-    st.metric("Columns", columns)
+
+    st.metric(
+        "Columns",
+        columns
+    )
+
 
 with c3:
+
     st.metric(
         "Duplicate Rows",
         duplicates
@@ -428,38 +589,59 @@ with c3:
 # =========================================================
 # DATA QUALITY
 # =========================================================
-st.subheader("🔍 Data Quality")
+
+st.subheader(
+    "🔍 Data Quality"
+)
 
 q1, q2, q3 = st.columns(3)
 
+
 with q1:
+
     st.metric(
         "Missing Values",
         missing_values
     )
 
+
 with q2:
+
     st.metric(
         "Duplicate Rows",
         duplicates
     )
 
+
 with q3:
+
     st.metric(
         "Missing %",
         f"{missing_percentage:.2f}%"
     )
 
+
 if missing_values == 0:
-    st.success("✅ No missing values detected.")
+
+    st.success(
+        "✅ No missing values detected."
+    )
+
 else:
+
     st.warning(
         f"⚠️ {missing_values} missing values detected."
     )
 
+
 if duplicates == 0:
-    st.success("✅ No duplicate rows detected.")
+
+    st.success(
+        "✅ No duplicate rows detected."
+    )
+
 else:
+
     st.warning(
         f"⚠️ {duplicates} duplicate rows detected."
     )
@@ -468,17 +650,25 @@ else:
 # =========================================================
 # COLUMN INFORMATION
 # =========================================================
-st.subheader("🧩 Column Information")
 
-column_info = pd.DataFrame({
-    "Column": df.columns,
-    "Data Type": df.dtypes.astype(str).values,
-    "Missing Values": df.isnull().sum().values,
-    "Unique Values": [
-        df[column].nunique()
-        for column in df.columns
-    ]
-})
+st.subheader(
+    "🧩 Column Information"
+)
+
+column_info = pd.DataFrame(
+    {
+        "Column": df.columns,
+        "Data Type":
+            df.dtypes.astype(str).values,
+        "Missing Values":
+            df.isnull().sum().values,
+        "Unique Values":
+            [
+                df[column].nunique()
+                for column in df.columns
+            ]
+    }
+)
 
 st.dataframe(
     column_info,
@@ -489,7 +679,10 @@ st.dataframe(
 # =========================================================
 # OUTLIERS
 # =========================================================
-st.subheader("🚨 Outlier Detection")
+
+st.subheader(
+    "🚨 Outlier Detection"
+)
 
 if outlier_results:
 
@@ -510,8 +703,8 @@ if outlier_results:
         )
 
         st.caption(
-            f"Outlier burden: {outlier_burden:.2f}% "
-            "relative to dataset rows."
+            f"Outlier burden: "
+            f"{outlier_burden:.2f}%"
         )
 
     else:
@@ -522,13 +715,18 @@ if outlier_results:
 
 else:
 
-    st.info("No numerical columns found.")
+    st.info(
+        "No numerical columns found."
+    )
 
 
 # =========================================================
 # PRIVACY
 # =========================================================
-st.subheader("🔐 Privacy Risk Audit")
+
+st.subheader(
+    "🔐 Privacy Risk Audit"
+)
 
 if sensitive_columns:
 
@@ -537,7 +735,10 @@ if sensitive_columns:
     )
 
     for column in sensitive_columns:
-        st.write(f"🔒 `{column}`")
+
+        st.write(
+            f"🔒 `{column}`"
+        )
 
 else:
 
@@ -545,6 +746,7 @@ else:
         "✅ No potentially sensitive "
         "column names detected."
     )
+
 
 st.caption(
     "Privacy detection is based on column names "
@@ -555,7 +757,10 @@ st.caption(
 # =========================================================
 # STATISTICS
 # =========================================================
-st.subheader("📈 Dataset Statistics")
+
+st.subheader(
+    "📈 Dataset Statistics"
+)
 
 if numeric_columns:
 
@@ -565,51 +770,59 @@ if numeric_columns:
         key="stats_column"
     )
 
-    series = df[selected_column].dropna()
+    series = (
+        df[selected_column]
+        .dropna()
+    )
 
     if len(series) > 0:
 
         s1, s2, s3, s4 = st.columns(4)
 
         with s1:
+
             st.metric(
                 "Minimum",
                 f"{series.min():.2f}"
             )
 
         with s2:
+
             st.metric(
                 "Maximum",
                 f"{series.max():.2f}"
             )
 
         with s3:
+
             st.metric(
                 "Mean",
                 f"{series.mean():.2f}"
             )
 
         with s4:
+
             st.metric(
                 "Median",
                 f"{series.median():.2f}"
             )
 
-        # FIX 1:
-        # No Plotly / st.bar_chart required.
-        # Use native Streamlit line chart.
-        st.write("### Distribution")
+        st.write(
+            "### Distribution"
+        )
 
         histogram = pd.DataFrame(
             {
-                "Frequency": series
-                .value_counts(bins=10)
-                .sort_index()
+                "Frequency":
+                series.value_counts(
+                    bins=10
+                ).sort_index()
             }
         )
 
         histogram.index = [
-            str(x) for x in histogram.index
+            str(x)
+            for x in histogram.index
         ]
 
         st.bar_chart(
@@ -628,44 +841,59 @@ else:
 # =========================================================
 # RECOMMENDATIONS
 # =========================================================
+
 recommendations = []
 
+
 if missing_values > 0:
+
     recommendations.append(
         "Handle missing values before ML training."
     )
 
+
 if duplicates > 0:
+
     recommendations.append(
         "Review and remove unnecessary duplicate records."
     )
 
+
 if total_outliers > 0:
+
     recommendations.append(
         "Investigate detected outliers before model training."
     )
 
+
 if sensitive_columns:
+
     recommendations.append(
         "Consider anonymizing or removing sensitive columns."
     )
 
+
 if bias_difference is not None:
 
     if bias_difference >= 20:
+
         recommendations.append(
             "Investigate the large outcome disparity between groups."
         )
 
     elif bias_difference >= 10:
+
         recommendations.append(
             "Review potential group-level outcome disparity."
         )
 
+
 if not recommendations:
+
     recommendations.append(
         "Dataset shows no major automated quality issues."
     )
+
 
 recommendations.append(
     "Perform exploratory data analysis before production ML use."
@@ -673,14 +901,258 @@ recommendations.append(
 
 
 # =========================================================
-# PDF REPORT
+# GOOGLE GEMINI AI
 # =========================================================
+
+st.divider()
+
+st.subheader(
+    "✨ Google Gemini AI Analyst"
+)
+
+st.write(
+    "Gemini interprets DataGuardian's measured audit "
+    "results and generates an explainable AI report."
+)
+
+
+if st.button(
+    "✨ Analyze Dataset with Gemini",
+    type="primary"
+):
+
+    if "GEMINI_API_KEY" not in st.secrets:
+
+        st.error(
+            "GEMINI_API_KEY is missing. "
+            "Add it in Streamlit Secrets."
+        )
+
+    else:
+
+        try:
+
+            gemini_client = genai.Client(
+                api_key=st.secrets[
+                    "GEMINI_API_KEY"
+                ]
+            )
+
+
+            audit_data = f"""
+DATASET AUDIT
+
+Dataset: {uploaded_file.name}
+
+Rows: {rows}
+
+Columns: {columns}
+
+Missing Values: {missing_values}
+
+Missing Percentage:
+{missing_percentage:.2f}%
+
+Duplicate Rows: {duplicates}
+
+Duplicate Percentage:
+{duplicate_percentage:.2f}%
+
+Potential Outliers:
+{total_outliers}
+
+Outlier Burden:
+{outlier_burden:.2f}%
+
+Outlier Risk:
+{outlier_status}
+
+Privacy Risk:
+{privacy_risk}
+
+Sensitive Columns:
+{sensitive_columns}
+
+Bias Status:
+{bias_status}
+
+Bias Difference:
+{bias_difference}
+
+Health Score:
+{score:.1f}/100
+
+Data Quality:
+{quality_status}
+
+ML Readiness:
+{ml_readiness}
+
+Existing Recommendations:
+{recommendations}
+"""
+
+
+            prompt = f"""
+You are DataGuardian AI,
+an expert AI data governance analyst.
+
+Analyze ONLY the audit evidence below.
+
+Do not invent information.
+
+Clearly distinguish:
+1. measured findings
+2. AI interpretation
+3. recommended actions
+
+AUDIT EVIDENCE:
+
+{audit_data}
+
+Create a professional report.
+
+Use these sections:
+
+## 🧠 Executive Summary
+
+## 🚨 Key Risks
+
+## 🔍 Data Quality Analysis
+
+## 📊 Outlier Analysis
+
+## 🔐 Privacy Analysis
+
+## ⚖️ Bias Analysis
+
+## 🤖 Machine Learning Readiness
+
+## 💡 Priority Recommendations
+
+Give exactly 5 recommendations.
+
+For each recommendation include:
+- Priority
+- Action
+- Reason
+
+## 🏁 Final Risk Level
+
+Choose one:
+
+LOW
+MEDIUM
+HIGH
+CRITICAL
+
+Explain why.
+
+Important:
+Privacy detection is based on column names and
+does not prove that personal information is absent.
+
+Bias analysis may be incomplete when suitable
+group/outcome data is unavailable.
+"""
+
+
+            with st.spinner(
+                "✨ Gemini is analyzing your dataset..."
+            ):
+
+                response = (
+                    gemini_client
+                    .models
+                    .generate_content(
+                        model="gemini-2.5-flash",
+                        contents=prompt
+                    )
+                )
+
+
+            st.success(
+                "✅ Gemini analysis completed."
+            )
+
+
+            st.markdown(
+                response.text
+            )
+
+
+            gemini_report = f"""
+DATAGUARDIAN AI
+GOOGLE GEMINI ANALYSIS REPORT
+
+Dataset:
+{uploaded_file.name}
+
+Health Score:
+{score:.1f}/100
+
+Data Quality:
+{quality_status}
+
+Outlier Risk:
+{outlier_status}
+
+Privacy Risk:
+{privacy_risk}
+
+Bias Status:
+{bias_status}
+
+ML Readiness:
+{ml_readiness}
+
+================================
+
+GEMINI ANALYSIS
+
+{response.text}
+"""
+
+
+            st.download_button(
+                "📥 Download Gemini Report",
+                gemini_report,
+                file_name=(
+                    "DataGuardian_Gemini_Report.txt"
+                ),
+                mime="text/plain"
+            )
+
+
+        except Exception as e:
+
+            st.error(
+                "Gemini analysis failed."
+            )
+
+            st.code(
+                str(e)
+            )
+
+
+# =========================================================
+# PROFESSIONAL PDF REPORT
+# =========================================================
+
+st.subheader(
+    "📥 Professional Report"
+)
+
+
 def create_pdf():
 
     if not REPORTLAB_AVAILABLE:
+
         return None
 
+
     buffer = BytesIO()
+
 
     doc = SimpleDocTemplate(
         buffer,
@@ -691,19 +1163,23 @@ def create_pdf():
         bottomMargin=40
     )
 
+
     styles = getSampleStyleSheet()
 
     title = styles["Title"]
+
     title.alignment = TA_CENTER
 
     story = []
 
+
     story.append(
         Paragraph(
-            "🛡️ DataGuardian AI",
+            "DataGuardian AI",
             title
         )
     )
+
 
     story.append(
         Paragraph(
@@ -712,7 +1188,11 @@ def create_pdf():
         )
     )
 
-    story.append(Spacer(1, 15))
+
+    story.append(
+        Spacer(1, 15)
+    )
+
 
     data = [
         ["Metric", "Result"],
@@ -729,46 +1209,55 @@ def create_pdf():
         ["Health Score", f"{score:.1f}/100"]
     ]
 
+
     table = Table(
         data,
         colWidths=[220, 260]
     )
 
+
     table.setStyle(
-        TableStyle([
-            (
-                "BACKGROUND",
-                (0, 0),
-                (-1, 0),
-                colors.HexColor("#1f2937")
-            ),
-            (
-                "TEXTCOLOR",
-                (0, 0),
-                (-1, 0),
-                colors.white
-            ),
-            (
-                "GRID",
-                (0, 0),
-                (-1, -1),
-                0.5,
-                colors.grey
-            ),
-            (
-                "PADDING",
-                (0, 0),
-                (-1, -1),
-                7
-            )
-        ])
+        TableStyle(
+            [
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, 0),
+                    colors.HexColor("#1f2937")
+                ),
+                (
+                    "TEXTCOLOR",
+                    (0, 0),
+                    (-1, 0),
+                    colors.white
+                ),
+                (
+                    "GRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.5,
+                    colors.grey
+                ),
+                (
+                    "PADDING",
+                    (0, 0),
+                    (-1, -1),
+                    7
+                )
+            ]
+        )
     )
 
-    story.append(table)
+
+    story.append(
+        table
+    )
+
 
     story.append(
         Spacer(1, 20)
     )
+
 
     story.append(
         Paragraph(
@@ -776,6 +1265,7 @@ def create_pdf():
             styles["Heading2"]
         )
     )
+
 
     for item in recommendations:
 
@@ -790,9 +1280,11 @@ def create_pdf():
             Spacer(1, 5)
         )
 
+
     story.append(
         Spacer(1, 15)
     )
+
 
     story.append(
         Paragraph(
@@ -801,17 +1293,16 @@ def create_pdf():
         )
     )
 
-    doc.build(story)
+
+    doc.build(
+        story
+    )
+
 
     buffer.seek(0)
 
     return buffer.getvalue()
 
-
-# =========================================================
-# PROFESSIONAL REPORT
-# =========================================================
-st.subheader("📥 Professional Report")
 
 if REPORTLAB_AVAILABLE:
 
@@ -820,50 +1311,59 @@ if REPORTLAB_AVAILABLE:
     st.download_button(
         "📄 Download Professional PDF Report",
         pdf,
-        file_name="DataGuardian_Dataset_Risk_Report.pdf",
+        file_name=(
+            "DataGuardian_Dataset_Risk_Report.pdf"
+        ),
         mime="application/pdf"
     )
 
 else:
 
     st.warning(
-        "PDF library is not installed yet."
-    )
-
-    st.code(
-        "reportlab",
-        language="text"
-    )
-
-    st.info(
-        "Add reportlab to requirements.txt and redeploy."
+        "PDF library is not installed."
     )
 
 
 # =========================================================
 # TEXT REPORT
 # =========================================================
+
 text_report = f"""
 DATAGUARDIAN AI
 DATASET RISK REPORT
 
-Dataset: {uploaded_file.name}
+Dataset:
+{uploaded_file.name}
 
-Rows: {rows}
-Columns: {columns}
+Rows:
+{rows}
 
-Missing Values: {missing_values}
-Missing Percentage: {missing_percentage:.2f}%
+Columns:
+{columns}
 
-Duplicate Rows: {duplicates}
+Missing Values:
+{missing_values}
 
-Potential Outliers: {total_outliers}
-Outlier Burden: {outlier_burden:.2f}%
-Outlier Risk: {outlier_status}
+Missing Percentage:
+{missing_percentage:.2f}%
 
-Privacy Risk: {privacy_risk}
+Duplicate Rows:
+{duplicates}
 
-Bias Status: {bias_status}
+Potential Outliers:
+{total_outliers}
+
+Outlier Burden:
+{outlier_burden:.2f}%
+
+Outlier Risk:
+{outlier_status}
+
+Privacy Risk:
+{privacy_risk}
+
+Bias Status:
+{bias_status}
 
 ML Readiness:
 {ml_readiness}
@@ -874,11 +1374,15 @@ Overall Health:
 RECOMMENDATIONS
 """
 
+
 for i, item in enumerate(
     recommendations,
     1
 ):
-    text_report += f"\n{i}. {item}"
+
+    text_report += (
+        f"\n{i}. {item}"
+    )
 
 
 st.download_button(
@@ -892,7 +1396,10 @@ st.download_button(
 # =========================================================
 # DATA PREVIEW
 # =========================================================
-st.subheader("👀 Dataset Preview")
+
+st.subheader(
+    "👀 Dataset Preview"
+)
 
 st.dataframe(
     df.head(10),
@@ -903,12 +1410,16 @@ st.dataframe(
 # =========================================================
 # FINAL SCORE
 # =========================================================
-st.subheader("🏥 Dataset Health Score")
+
+st.subheader(
+    "🏥 Dataset Health Score"
+)
 
 st.metric(
     "Overall Dataset Health",
     f"{score:.1f}/100"
 )
+
 
 if score >= 85:
 
