@@ -1,10 +1,28 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
+from io import BytesIO
 
 try:
     from openai import OpenAI
 except ImportError:
     OpenAI = None
+
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import (
+        SimpleDocTemplate,
+        Paragraph,
+        Spacer,
+        Table,
+        TableStyle
+    )
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.enums import TA_CENTER
+    REPORTLAB_AVAILABLE = True
+except ImportError:
+    REPORTLAB_AVAILABLE = False
 
 
 # =========================================================
@@ -30,10 +48,12 @@ st.divider()
 client = None
 
 if OpenAI is not None and "OPENAI_API_KEY" in st.secrets:
+
     try:
         client = OpenAI(
             api_key=st.secrets["OPENAI_API_KEY"]
         )
+
     except Exception:
         client = None
 
@@ -48,7 +68,11 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is None:
-    st.info("👆 Upload a CSV dataset to begin your analysis.")
+
+    st.info(
+        "👆 Upload a CSV dataset to begin your analysis."
+    )
+
     st.stop()
 
 
@@ -57,10 +81,17 @@ if uploaded_file is None:
 # =========================================================
 
 try:
+
     df = pd.read_csv(uploaded_file)
+
 except Exception as e:
-    st.error(f"Unable to read the CSV file: {e}")
+
+    st.error(
+        f"Unable to read the CSV file: {e}"
+    )
+
     st.stop()
+
 
 st.success("Dataset uploaded successfully!")
 
@@ -70,12 +101,19 @@ st.success("Dataset uploaded successfully!")
 # =========================================================
 
 rows, columns = df.shape
-duplicates = int(df.duplicated().sum())
 
-missing_values = int(df.isnull().sum().sum())
+duplicates = int(
+    df.duplicated().sum()
+)
+
+missing_values = int(
+    df.isnull().sum().sum()
+)
 
 numeric_columns = list(
-    df.select_dtypes(include="number").columns
+    df.select_dtypes(
+        include="number"
+    ).columns
 )
 
 
@@ -84,6 +122,7 @@ numeric_columns = list(
 # =========================================================
 
 total_outliers = 0
+
 outlier_results = []
 
 for column in numeric_columns:
@@ -99,15 +138,21 @@ for column in numeric_columns:
     iqr = q3 - q1
 
     if iqr == 0:
+
         count = 0
         lower = q1
         upper = q3
+
     else:
+
         lower = q1 - 1.5 * iqr
         upper = q3 + 1.5 * iqr
 
         count = int(
-            ((data < lower) | (data > upper)).sum()
+            (
+                (data < lower) |
+                (data > upper)
+            ).sum()
         )
 
     total_outliers += count
@@ -151,15 +196,59 @@ for column in df.columns:
         keyword in name
         for keyword in sensitive_keywords
     ):
+
         sensitive_columns.append(column)
 
 
 if len(sensitive_columns) >= 3:
+
     privacy_risk = "HIGH"
+
 elif len(sensitive_columns) > 0:
+
     privacy_risk = "MEDIUM"
+
 else:
+
     privacy_risk = "LOW"
+
+
+# =========================================================
+# DATA QUALITY SCORE
+# =========================================================
+
+missing_percentage = 0
+
+if rows > 0 and columns > 0:
+
+    missing_percentage = (
+        missing_values /
+        (rows * columns)
+    ) * 100
+
+
+duplicate_percentage = 0
+
+if rows > 0:
+
+    duplicate_percentage = (
+        duplicates / rows
+    ) * 100
+
+
+# =========================================================
+# OUTLIER BURDEN
+# =========================================================
+
+outlier_burden = 0
+
+if rows > 0:
+
+    # Measures total detected outlier values
+    # relative to dataset rows.
+    outlier_burden = (
+        total_outliers / rows
+    ) * 100
 
 
 # =========================================================
@@ -168,58 +257,54 @@ else:
 
 score = 100.0
 
-# Missing data penalty
-if rows > 0 and columns > 0:
 
-    missing_percentage = (
-        missing_values / (rows * columns)
-    ) * 100
+# Missing value penalty
+missing_penalty = min(
+    missing_percentage * 2,
+    25
+)
 
-    score -= min(
-        missing_percentage * 2,
-        30
-    )
+score -= missing_penalty
 
 
 # Duplicate penalty
-if rows > 0:
+duplicate_penalty = min(
+    duplicate_percentage * 2,
+    15
+)
 
-    duplicate_percentage = (
-        duplicates / rows
-    ) * 100
-
-    score -= min(
-        duplicate_percentage * 2,
-        20
-    )
+score -= duplicate_penalty
 
 
-# Outlier penalty
-if len(numeric_columns) > 0:
+# Stronger outlier penalty
+#
+# Example:
+# 64 outliers / 198 rows = 32.3
+# Outlier penalty ≈ 25.8 points
+#
+# This prevents a dataset with many
+# detected outliers from receiving an
+# unrealistically high health score.
 
-    possible_values = (
-        rows * len(numeric_columns)
-    )
+outlier_penalty = min(
+    outlier_burden * 0.8,
+    40
+)
 
-    if possible_values > 0:
-
-        outlier_percentage = (
-            total_outliers / possible_values
-        ) * 100
-
-        score -= min(
-            outlier_percentage * 2,
-            40
-        )
+score -= outlier_penalty
 
 
 # Privacy penalty
 if privacy_risk == "HIGH":
+
     score -= 15
+
 elif privacy_risk == "MEDIUM":
+
     score -= 7
 
 
+# Keep score between 0 and 100
 score = max(
     0,
     min(100, score)
@@ -227,42 +312,319 @@ score = max(
 
 
 # =========================================================
-# DATASET OVERVIEW
+# BIAS AUDIT
 # =========================================================
 
-st.subheader("📊 Dataset Overview")
+categorical_columns = list(
+    df.select_dtypes(
+        include=["object", "category"]
+    ).columns
+)
 
-c1, c2, c3 = st.columns(3)
+bias_available = False
 
-with c1:
-    st.metric("Rows", rows)
+bias_status = "⚪ Not Evaluated"
 
-with c2:
-    st.metric("Columns", columns)
+bias_difference = None
 
-with c3:
+bias_table = None
+
+
+if categorical_columns:
+
+    st.subheader("⚖️ Bias Audit")
+
+    group_column = st.selectbox(
+        "Select group column",
+        categorical_columns,
+        key="group_column"
+    )
+
+    target_column = st.selectbox(
+        "Select outcome column",
+        list(df.columns),
+        key="target_column"
+    )
+
+    unique_values = (
+        df[target_column]
+        .dropna()
+        .unique()
+    )
+
+    if len(unique_values) == 2:
+
+        bias_available = True
+
+        bias_status = "🟢 Evaluated"
+
+        positive_value = st.selectbox(
+            "Select positive outcome",
+            unique_values,
+            key="positive_value"
+        )
+
+        temp = df[
+            [group_column, target_column]
+        ].dropna().copy()
+
+        temp["positive"] = (
+            temp[target_column] ==
+            positive_value
+        )
+
+        bias_table = (
+            temp
+            .groupby(group_column)["positive"]
+            .mean()
+            .mul(100)
+            .round(2)
+            .reset_index()
+        )
+
+        bias_table.columns = [
+            group_column,
+            "Outcome Rate (%)"
+        ]
+
+        st.dataframe(
+            bias_table,
+            use_container_width=True
+        )
+
+        if len(bias_table) >= 2:
+
+            bias_difference = (
+                bias_table[
+                    "Outcome Rate (%)"
+                ].max()
+                -
+                bias_table[
+                    "Outcome Rate (%)"
+                ].min()
+            )
+
+            st.metric(
+                "Maximum Outcome Rate Difference",
+                f"{bias_difference:.2f}%"
+            )
+
+            if bias_difference >= 20:
+
+                st.error(
+                    "🔴 Large outcome disparity detected."
+                )
+
+            elif bias_difference >= 10:
+
+                st.warning(
+                    "🟡 Potential outcome disparity detected."
+                )
+
+            else:
+
+                st.success(
+                    "🟢 No large outcome disparity detected."
+                )
+
+        st.caption(
+            "A disparity does not automatically prove discrimination."
+        )
+
+    else:
+
+        st.info(
+            "Bias analysis currently supports "
+            "binary outcomes."
+        )
+
+else:
+
+    st.subheader("⚖️ Bias Audit")
+
+    st.info(
+        "No categorical columns found. "
+        "Bias analysis cannot be performed automatically."
+    )
+
+
+# =========================================================
+# RISK LEVELS
+# =========================================================
+
+if score >= 85:
+
+    quality_status = "🟢 Excellent"
+
+elif score >= 70:
+
+    quality_status = "🟡 Good"
+
+elif score >= 50:
+
+    quality_status = "🟠 Needs Attention"
+
+else:
+
+    quality_status = "🔴 Poor"
+
+
+# Outlier risk
+
+if total_outliers == 0:
+
+    outlier_status = "🟢 Low"
+
+elif outlier_burden < 5:
+
+    outlier_status = "🟡 Moderate"
+
+else:
+
+    outlier_status = "🔴 High"
+
+
+# Privacy display
+
+if privacy_risk == "LOW":
+
+    privacy_display = "🟢 Low"
+
+elif privacy_risk == "MEDIUM":
+
+    privacy_display = "🟡 Medium"
+
+else:
+
+    privacy_display = "🔴 High"
+
+
+# =========================================================
+# ML READINESS
+# =========================================================
+
+if score >= 85:
+
+    ml_readiness = "🟢 Ready for initial ML experiments"
+
+elif score >= 70:
+
+    ml_readiness = "🟡 Usable after preprocessing"
+
+elif score >= 50:
+
+    ml_readiness = "🟠 Needs significant preprocessing"
+
+else:
+
+    ml_readiness = "🔴 Not recommended before cleaning"
+
+
+# =========================================================
+# DATASET RISK REPORT
+# =========================================================
+
+st.subheader("🛡️ Dataset Risk Report")
+
+r1, r2, r3, r4 = st.columns(4)
+
+with r1:
+
+    st.metric(
+        "Overall Health",
+        f"{score:.1f}/100"
+    )
+
+with r2:
+
+    st.metric(
+        "Data Quality",
+        quality_status
+    )
+
+with r3:
+
+    st.metric(
+        "Outlier Risk",
+        outlier_status
+    )
+
+with r4:
+
+    st.metric(
+        "Privacy Risk",
+        privacy_display
+    )
+
+
+st.divider()
+
+r5, r6 = st.columns(2)
+
+with r5:
+
+    st.write(
+        f"**⚖️ Bias Status:** {bias_status}"
+    )
+
+with r6:
+
+    st.write(
+        f"**🤖 ML Readiness:** {ml_readiness}"
+    )
+
+
+# =========================================================
+# DATA QUALITY DETAILS
+# =========================================================
+
+st.subheader("🔍 Data Quality")
+
+q1, q2, q3 = st.columns(3)
+
+with q1:
+
+    st.metric(
+        "Missing Values",
+        missing_values
+    )
+
+with q2:
+
     st.metric(
         "Duplicate Rows",
         duplicates
     )
 
+with q3:
 
-# =========================================================
-# DATA QUALITY
-# =========================================================
+    st.metric(
+        "Missing %",
+        f"{missing_percentage:.2f}%"
+    )
 
-st.subheader("🔍 Data Quality")
 
 if missing_values == 0:
-    st.success("✅ No missing values detected.")
+
+    st.success(
+        "✅ No missing values detected."
+    )
+
 else:
+
     st.warning(
         f"⚠️ {missing_values} missing values detected."
     )
 
+
 if duplicates == 0:
-    st.success("✅ No duplicate rows detected.")
+
+    st.success(
+        "✅ No duplicate rows detected."
+    )
+
 else:
+
     st.warning(
         f"⚠️ {duplicates} duplicate rows detected."
     )
@@ -275,13 +637,20 @@ else:
 st.subheader("🧩 Column Information")
 
 column_info = pd.DataFrame({
+
     "Column": df.columns,
-    "Data Type": df.dtypes.astype(str).values,
-    "Missing Values": df.isnull().sum().values,
+
+    "Data Type":
+        df.dtypes.astype(str).values,
+
+    "Missing Values":
+        df.isnull().sum().values,
+
     "Unique Values": [
         df[column].nunique()
         for column in df.columns
     ]
+
 })
 
 st.dataframe(
@@ -291,7 +660,7 @@ st.dataframe(
 
 
 # =========================================================
-# OUTLIER DETECTION
+# OUTLIER DETAILS
 # =========================================================
 
 st.subheader("🚨 Outlier Detection")
@@ -310,8 +679,13 @@ if outlier_results:
     if total_outliers > 0:
 
         st.warning(
-            f"⚠️ {total_outliers} "
-            "potential outlier values detected."
+            f"⚠️ {total_outliers} potential "
+            f"outlier values detected."
+        )
+
+        st.caption(
+            f"Outlier burden: "
+            f"{outlier_burden:.2f}% relative to dataset rows."
         )
 
     else:
@@ -340,7 +714,10 @@ if sensitive_columns:
     )
 
     for column in sensitive_columns:
-        st.write(f"🔒 `{column}`")
+
+        st.write(
+            f"🔒 `{column}`"
+        )
 
 else:
 
@@ -352,169 +729,6 @@ else:
 st.caption(
     "Privacy detection is based on column names "
     "and is a heuristic, not a guarantee."
-)
-
-
-# =========================================================
-# BIAS AUDIT
-# =========================================================
-
-st.subheader("⚖️ Bias Audit")
-
-categorical_columns = list(
-    df.select_dtypes(
-        include=["object", "category"]
-    ).columns
-)
-
-bias_available = False
-bias_status = "⚪ Not Evaluated"
-
-if categorical_columns:
-
-    group_column = st.selectbox(
-        "Select group column",
-        categorical_columns,
-        key="group_column"
-    )
-
-    target_column = st.selectbox(
-        "Select outcome column",
-        list(df.columns),
-        key="target_column"
-    )
-
-    unique_values = (
-        df[target_column]
-        .dropna()
-        .unique()
-    )
-
-    if len(unique_values) == 2:
-
-        bias_available = True
-        bias_status = "🟢 Evaluated"
-
-        positive_value = st.selectbox(
-            "Select positive outcome",
-            unique_values,
-            key="positive_value"
-        )
-
-        temp = df[
-            [group_column, target_column]
-        ].dropna()
-
-        temp["positive"] = (
-            temp[target_column] == positive_value
-        )
-
-        bias_table = (
-            temp
-            .groupby(group_column)["positive"]
-            .mean()
-            .mul(100)
-            .round(2)
-            .reset_index()
-        )
-
-        bias_table.columns = [
-            group_column,
-            "Outcome Rate (%)"
-        ]
-
-        st.dataframe(
-            bias_table,
-            use_container_width=True
-        )
-
-        if len(bias_table) >= 2:
-
-            difference = (
-                bias_table["Outcome Rate (%)"].max()
-                -
-                bias_table["Outcome Rate (%)"].min()
-            )
-
-            st.metric(
-                "Maximum Outcome Rate Difference",
-                f"{difference:.2f}%"
-            )
-
-            if difference >= 20:
-                st.error(
-                    "🔴 Large outcome disparity detected."
-                )
-            elif difference >= 10:
-                st.warning(
-                    "🟡 Potential outcome disparity detected."
-                )
-            else:
-                st.success(
-                    "🟢 No large outcome disparity detected."
-                )
-
-        st.caption(
-            "A disparity does not automatically prove discrimination."
-        )
-
-    else:
-
-        st.info(
-            "Bias analysis currently supports "
-            "binary outcomes."
-        )
-
-else:
-
-    st.info(
-        "No categorical columns found. "
-        "Bias analysis cannot be performed automatically."
-    )
-
-
-# =========================================================
-# RISK REPORT
-# =========================================================
-
-st.subheader("🛡️ Dataset Risk Report")
-
-if score >= 85:
-    quality_status = "🟢 Excellent"
-elif score >= 70:
-    quality_status = "🟡 Good"
-elif score >= 50:
-    quality_status = "🟠 Needs Attention"
-else:
-    quality_status = "🔴 Poor"
-
-
-if total_outliers == 0:
-    outlier_status = "🟢 Low"
-elif total_outliers < rows * 0.10:
-    outlier_status = "🟡 Moderate"
-else:
-    outlier_status = "🔴 High"
-
-
-st.write(
-    f"**Overall Health:** {score:.1f}/100"
-)
-
-st.write(
-    f"**Data Quality:** {quality_status}"
-)
-
-st.write(
-    f"**Outlier Risk:** {outlier_status}"
-)
-
-st.write(
-    f"**Privacy Risk:** {privacy_risk}"
-)
-
-st.write(
-    f"**Bias Status:** {bias_status}"
 )
 
 
@@ -532,20 +746,516 @@ if numeric_columns:
         key="statistics_column"
     )
 
-    chart_data = df[
-        [selected_column]
-    ].dropna()
-
-    st.bar_chart(
-        chart_data,
-        x=None,
-        y=selected_column
+    series = (
+        df[selected_column]
+        .dropna()
     )
+
+    if len(series) > 0:
+
+        s1, s2, s3, s4 = st.columns(4)
+
+        with s1:
+
+            st.metric(
+                "Minimum",
+                f"{series.min():.2f}"
+            )
+
+        with s2:
+
+            st.metric(
+                "Maximum",
+                f"{series.max():.2f}"
+            )
+
+        with s3:
+
+            st.metric(
+                "Mean",
+                f"{series.mean():.2f}"
+            )
+
+        with s4:
+
+            st.metric(
+                "Median",
+                f"{series.median():.2f}"
+            )
+
+
+        # Histogram
+        hist_values, bin_edges = np.histogram(
+            series,
+            bins=10
+        )
+
+        labels = []
+
+        for i in range(
+            len(bin_edges) - 1
+        ):
+
+            labels.append(
+                f"{bin_edges[i]:.1f}–{bin_edges[i+1]:.1f}"
+            )
+
+
+        histogram_df = pd.DataFrame({
+            "Range": labels,
+            "Frequency": hist_values
+        })
+
+        st.write(
+            "### Distribution"
+        )
+
+        st.bar_chart(
+            histogram_df,
+            x="Range",
+            y="Frequency"
+        )
 
 else:
 
     st.info(
         "No numerical columns available for statistics."
+    )
+
+
+# =========================================================
+# RECOMMENDATIONS
+# =========================================================
+
+recommendations = []
+
+if missing_values > 0:
+
+    recommendations.append(
+        "Handle missing values before ML training."
+    )
+
+if duplicates > 0:
+
+    recommendations.append(
+        "Review and remove unnecessary duplicate records."
+    )
+
+if total_outliers > 0:
+
+    recommendations.append(
+        "Investigate detected outliers before model training."
+    )
+
+if sensitive_columns:
+
+    recommendations.append(
+        "Consider anonymizing or removing sensitive columns."
+    )
+
+if bias_available and bias_difference is not None:
+
+    if bias_difference >= 20:
+
+        recommendations.append(
+            "Investigate the large outcome disparity between groups."
+        )
+
+    elif bias_difference >= 10:
+
+        recommendations.append(
+            "Review potential group-level outcome disparity."
+        )
+
+if not recommendations:
+
+    recommendations.append(
+        "Dataset shows no major automated quality issues."
+    )
+
+recommendations.append(
+    "Perform exploratory data analysis before production ML use."
+)
+
+
+# =========================================================
+# PROFESSIONAL REPORT DATA
+# =========================================================
+
+report_text = f"""
+DATAGUARDIAN AI
+DATASET RISK REPORT
+
+Dataset: {uploaded_file.name}
+
+==================================================
+
+DATASET SUMMARY
+
+Rows: {rows}
+Columns: {columns}
+Numerical Columns: {len(numeric_columns)}
+Categorical Columns: {len(categorical_columns)}
+
+==================================================
+
+DATA QUALITY
+
+Missing Values: {missing_values}
+Missing Percentage: {missing_percentage:.2f}%
+
+Duplicate Rows: {duplicates}
+Duplicate Percentage: {duplicate_percentage:.2f}%
+
+==================================================
+
+OUTLIER ANALYSIS
+
+Potential Outliers: {total_outliers}
+Outlier Burden: {outlier_burden:.2f}%
+Outlier Risk: {outlier_status}
+
+==================================================
+
+PRIVACY ASSESSMENT
+
+Privacy Risk: {privacy_risk}
+
+Sensitive Columns:
+{", ".join(map(str, sensitive_columns))
+ if sensitive_columns else "None detected"}
+
+==================================================
+
+BIAS ASSESSMENT
+
+Bias Status: {bias_status}
+
+"""
+
+if bias_difference is not None:
+
+    report_text += (
+        f"Maximum Outcome Rate Difference: "
+        f"{bias_difference:.2f}%\n"
+    )
+
+else:
+
+    report_text += (
+        "Maximum Outcome Rate Difference: "
+        "Not available\n"
+    )
+
+
+report_text += f"""
+
+==================================================
+
+ML READINESS
+
+{ml_readiness}
+
+==================================================
+
+FINAL HEALTH SCORE
+
+{score:.1f}/100
+
+Data Quality: {quality_status}
+Outlier Risk: {outlier_status}
+Privacy Risk: {privacy_display}
+Bias Status: {bias_status}
+
+==================================================
+
+RECOMMENDATIONS
+
+"""
+
+for i, recommendation in enumerate(
+    recommendations,
+    start=1
+):
+
+    report_text += (
+        f"{i}. {recommendation}\n"
+    )
+
+
+# =========================================================
+# PDF GENERATOR
+# =========================================================
+
+def create_pdf_report():
+
+    if not REPORTLAB_AVAILABLE:
+
+        return None
+
+    buffer = BytesIO()
+
+    document = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=40,
+        leftMargin=40,
+        topMargin=40,
+        bottomMargin=40
+    )
+
+    styles = getSampleStyleSheet()
+
+    title_style = styles["Title"]
+    title_style.alignment = TA_CENTER
+
+    story = []
+
+    story.append(
+        Paragraph(
+            "🛡️ DataGuardian AI",
+            title_style
+        )
+    )
+
+    story.append(
+        Spacer(1, 15)
+    )
+
+    story.append(
+        Paragraph(
+            "Dataset Risk Report",
+            styles["Heading2"]
+        )
+    )
+
+    story.append(
+        Spacer(1, 10)
+    )
+
+    story.append(
+        Paragraph(
+            f"<b>Dataset:</b> {uploaded_file.name}",
+            styles["BodyText"]
+        )
+    )
+
+    story.append(
+        Spacer(1, 15)
+    )
+
+
+    # Summary table
+
+    summary_data = [
+
+        ["Metric", "Result"],
+
+        ["Rows", str(rows)],
+
+        ["Columns", str(columns)],
+
+        ["Missing Values", str(missing_values)],
+
+        ["Duplicate Rows", str(duplicates)],
+
+        ["Potential Outliers",
+         str(total_outliers)],
+
+        ["Privacy Risk", privacy_risk],
+
+        ["Bias Status", bias_status],
+
+        ["ML Readiness", ml_readiness],
+
+        ["Overall Health",
+         f"{score:.1f}/100"]
+
+    ]
+
+
+    table = Table(
+        summary_data,
+        colWidths=[220, 260]
+    )
+
+    table.setStyle(
+        TableStyle([
+
+            (
+                "BACKGROUND",
+                (0, 0),
+                (-1, 0),
+                colors.HexColor("#1f2937")
+            ),
+
+            (
+                "TEXTCOLOR",
+                (0, 0),
+                (-1, 0),
+                colors.white
+            ),
+
+            (
+                "GRID",
+                (0, 0),
+                (-1, -1),
+                0.5,
+                colors.grey
+            ),
+
+            (
+                "VALIGN",
+                (0, 0),
+                (-1, -1),
+                "MIDDLE"
+            ),
+
+            (
+                "PADDING",
+                (0, 0),
+                (-1, -1),
+                7
+            )
+
+        ])
+    )
+
+    story.append(table)
+
+    story.append(
+        Spacer(1, 20)
+    )
+
+
+    # Sections
+
+    sections = [
+
+        (
+            "Data Quality",
+            f"Missing values: {missing_values} "
+            f"({missing_percentage:.2f}%). "
+            f"Duplicate rows: {duplicates}."
+        ),
+
+        (
+            "Outlier Analysis",
+            f"{total_outliers} potential outlier "
+            f"values detected. "
+            f"Outlier risk: {outlier_status}."
+        ),
+
+        (
+            "Privacy Assessment",
+            f"Privacy risk: {privacy_risk}. "
+            f"Potentially sensitive columns: "
+            f"{', '.join(map(str, sensitive_columns)) "
+            if sensitive_columns else 'None detected'}."
+        ),
+
+        (
+            "Bias Assessment",
+            f"Bias status: {bias_status}. "
+            + (
+                f"Maximum outcome rate difference: "
+                f"{bias_difference:.2f}%."
+                if bias_difference is not None
+                else "No binary outcome disparity was calculated."
+            )
+        ),
+
+        (
+            "Machine Learning Readiness",
+            ml_readiness
+        )
+
+    ]
+
+
+    for heading, body in sections:
+
+        story.append(
+            Paragraph(
+                heading,
+                styles["Heading2"]
+            )
+        )
+
+        story.append(
+            Paragraph(
+                body,
+                styles["BodyText"]
+            )
+        )
+
+        story.append(
+            Spacer(1, 12)
+        )
+
+
+    story.append(
+        Paragraph(
+            "Recommendations",
+            styles["Heading2"]
+        )
+    )
+
+    for recommendation in recommendations:
+
+        story.append(
+            Paragraph(
+                f"• {recommendation}",
+                styles["BodyText"]
+            )
+        )
+
+        story.append(
+            Spacer(1, 5)
+        )
+
+
+    story.append(
+        Spacer(1, 15)
+    )
+
+    story.append(
+        Paragraph(
+            "Generated by DataGuardian AI",
+            styles["Italic"]
+        )
+    )
+
+
+    document.build(story)
+
+    buffer.seek(0)
+
+    return buffer.getvalue()
+
+
+# =========================================================
+# PROFESSIONAL REPORT DOWNLOAD
+# =========================================================
+
+st.subheader("📥 Professional Report")
+
+if REPORTLAB_AVAILABLE:
+
+    pdf_report = create_pdf_report()
+
+    st.download_button(
+        label="📄 Download Professional PDF Report",
+        data=pdf_report,
+        file_name="DataGuardian_Dataset_Risk_Report.pdf",
+        mime="application/pdf"
+    )
+
+else:
+
+    st.warning(
+        "PDF generation requires reportlab. "
+        "Add `reportlab` to requirements.txt."
     )
 
 
@@ -577,6 +1287,7 @@ Sensitive columns: {sensitive_columns}
 Privacy risk: {privacy_risk}
 Health score: {score:.1f}/100
 Bias status: {bias_status}
+ML readiness: {ml_readiness}
 """
 
 
@@ -603,7 +1314,7 @@ Analyze the following dataset summary:
 
 {summary}
 
-Create a concise report with:
+Create a concise professional report with:
 
 1. Dataset Overview
 2. Data Quality
@@ -620,6 +1331,7 @@ Do not invent information.
             ai_report = response.output_text
 
         except Exception:
+
             ai_report = None
 
 
@@ -748,58 +1460,25 @@ Do not invent information.
             "## 🤖 Machine Learning Readiness"
         )
 
-        if score >= 85:
-
-            report.append(
-                "The dataset is in good condition "
-                "for initial machine-learning experiments."
-            )
-
-        elif score >= 70:
-
-            report.append(
-                "The dataset is usable, but "
-                "some preprocessing is recommended."
-            )
-
-        else:
-
-            report.append(
-                "Additional preprocessing is "
-                "recommended before ML training."
-            )
+        report.append(
+            ml_readiness
+        )
 
 
         report.append(
             "## 💡 Recommendations"
         )
 
-        if total_outliers > 0:
+        for recommendation in recommendations:
+
             report.append(
-                "• Investigate potential outliers."
+                f"• {recommendation}"
             )
 
-        if missing_values > 0:
-            report.append(
-                "• Handle missing values."
-            )
 
-        if duplicates > 0:
-            report.append(
-                "• Review duplicate records."
-            )
-
-        if sensitive_columns:
-            report.append(
-                "• Consider anonymizing sensitive data."
-            )
-
-        report.append(
-            "• Perform exploratory data analysis "
-            "before model training."
+        ai_report = "\n\n".join(
+            report
         )
-
-        ai_report = "\n\n".join(report)
 
 
     # =====================================================
@@ -810,36 +1489,19 @@ Do not invent information.
 
 
     # =====================================================
-    # DOWNLOAD REPORT
+    # TEXT DOWNLOAD
     # =====================================================
 
-    full_report = f"""
-DATAGUARDIAN AI
-DATASET ANALYSIS REPORT
-
-Dataset: {uploaded_file.name}
-
-Rows: {rows}
-Columns: {columns}
-
-Missing Values: {missing_values}
-Duplicate Rows: {duplicates}
-Potential Outliers: {total_outliers}
-
-Privacy Risk: {privacy_risk}
-
-Overall Health: {score:.1f}/100
-
-Bias Status: {bias_status}
-
---------------------------------
-
-{ai_report}
-"""
-
+    full_report = (
+        report_text
+        +
+        "\n\n"
+        +
+        ai_report
+    )
 
     st.download_button(
-        "📥 Download Analysis Report",
+        "📥 Download Text Analysis Report",
         full_report,
         file_name="DataGuardian_Report.txt",
         mime="text/plain"
