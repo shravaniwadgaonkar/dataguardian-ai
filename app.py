@@ -48,12 +48,10 @@ st.divider()
 client = None
 
 if OpenAI is not None and "OPENAI_API_KEY" in st.secrets:
-
     try:
         client = OpenAI(
             api_key=st.secrets["OPENAI_API_KEY"]
         )
-
     except Exception:
         client = None
 
@@ -68,11 +66,7 @@ uploaded_file = st.file_uploader(
 )
 
 if uploaded_file is None:
-
-    st.info(
-        "👆 Upload a CSV dataset to begin your analysis."
-    )
-
+    st.info("👆 Upload a CSV dataset to begin your analysis.")
     st.stop()
 
 
@@ -81,17 +75,10 @@ if uploaded_file is None:
 # =========================================================
 
 try:
-
     df = pd.read_csv(uploaded_file)
-
 except Exception as e:
-
-    st.error(
-        f"Unable to read the CSV file: {e}"
-    )
-
+    st.error(f"Unable to read the CSV file: {e}")
     st.stop()
-
 
 st.success("Dataset uploaded successfully!")
 
@@ -111,8 +98,12 @@ missing_values = int(
 )
 
 numeric_columns = list(
+    df.select_dtypes(include="number").columns
+)
+
+categorical_columns = list(
     df.select_dtypes(
-        include="number"
+        include=["object", "category"]
     ).columns
 )
 
@@ -122,7 +113,6 @@ numeric_columns = list(
 # =========================================================
 
 total_outliers = 0
-
 outlier_results = []
 
 for column in numeric_columns:
@@ -138,13 +128,11 @@ for column in numeric_columns:
     iqr = q3 - q1
 
     if iqr == 0:
-
         count = 0
         lower = q1
         upper = q3
 
     else:
-
         lower = q1 - 1.5 * iqr
         upper = q3 + 1.5 * iqr
 
@@ -190,34 +178,28 @@ sensitive_columns = []
 
 for column in df.columns:
 
-    name = str(column).lower()
+    column_name = str(column).lower()
 
     if any(
-        keyword in name
+        keyword in column_name
         for keyword in sensitive_keywords
     ):
-
         sensitive_columns.append(column)
 
 
 if len(sensitive_columns) >= 3:
-
     privacy_risk = "HIGH"
 
 elif len(sensitive_columns) > 0:
-
     privacy_risk = "MEDIUM"
 
 else:
-
     privacy_risk = "LOW"
 
 
 # =========================================================
-# DATA QUALITY SCORE
+# DATA QUALITY CALCULATIONS
 # =========================================================
-
-missing_percentage = 0
 
 if rows > 0 and columns > 0:
 
@@ -226,8 +208,10 @@ if rows > 0 and columns > 0:
         (rows * columns)
     ) * 100
 
+else:
 
-duplicate_percentage = 0
+    missing_percentage = 0
+
 
 if rows > 0:
 
@@ -235,20 +219,24 @@ if rows > 0:
         duplicates / rows
     ) * 100
 
+else:
+
+    duplicate_percentage = 0
+
 
 # =========================================================
 # OUTLIER BURDEN
 # =========================================================
 
-outlier_burden = 0
-
 if rows > 0:
 
-    # Measures total detected outlier values
-    # relative to dataset rows.
     outlier_burden = (
         total_outliers / rows
     ) * 100
+
+else:
+
+    outlier_burden = 0
 
 
 # =========================================================
@@ -258,7 +246,7 @@ if rows > 0:
 score = 100.0
 
 
-# Missing value penalty
+# Missing values penalty
 missing_penalty = min(
     missing_percentage * 2,
     25
@@ -276,16 +264,7 @@ duplicate_penalty = min(
 score -= duplicate_penalty
 
 
-# Stronger outlier penalty
-#
-# Example:
-# 64 outliers / 198 rows = 32.3
-# Outlier penalty ≈ 25.8 points
-#
-# This prevents a dataset with many
-# detected outliers from receiving an
-# unrealistically high health score.
-
+# Outlier penalty
 outlier_penalty = min(
     outlier_burden * 0.8,
     40
@@ -304,7 +283,6 @@ elif privacy_risk == "MEDIUM":
     score -= 7
 
 
-# Keep score between 0 and 100
 score = max(
     0,
     min(100, score)
@@ -315,24 +293,15 @@ score = max(
 # BIAS AUDIT
 # =========================================================
 
-categorical_columns = list(
-    df.select_dtypes(
-        include=["object", "category"]
-    ).columns
-)
-
 bias_available = False
-
 bias_status = "⚪ Not Evaluated"
-
 bias_difference = None
-
 bias_table = None
 
 
-if categorical_columns:
+st.subheader("⚖️ Bias Audit")
 
-    st.subheader("⚖️ Bias Audit")
+if categorical_columns:
 
     group_column = st.selectbox(
         "Select group column",
@@ -355,7 +324,6 @@ if categorical_columns:
     if len(unique_values) == 2:
 
         bias_available = True
-
         bias_status = "🟢 Evaluated"
 
         positive_value = st.selectbox(
@@ -369,8 +337,7 @@ if categorical_columns:
         ].dropna().copy()
 
         temp["positive"] = (
-            temp[target_column] ==
-            positive_value
+            temp[target_column] == positive_value
         )
 
         bias_table = (
@@ -395,13 +362,9 @@ if categorical_columns:
         if len(bias_table) >= 2:
 
             bias_difference = (
-                bias_table[
-                    "Outcome Rate (%)"
-                ].max()
+                bias_table["Outcome Rate (%)"].max()
                 -
-                bias_table[
-                    "Outcome Rate (%)"
-                ].min()
+                bias_table["Outcome Rate (%)"].min()
             )
 
             st.metric(
@@ -434,13 +397,10 @@ if categorical_columns:
     else:
 
         st.info(
-            "Bias analysis currently supports "
-            "binary outcomes."
+            "Bias analysis currently supports binary outcomes."
         )
 
 else:
-
-    st.subheader("⚖️ Bias Audit")
 
     st.info(
         "No categorical columns found. "
@@ -469,8 +429,6 @@ else:
     quality_status = "🔴 Poor"
 
 
-# Outlier risk
-
 if total_outliers == 0:
 
     outlier_status = "🟢 Low"
@@ -483,8 +441,6 @@ else:
 
     outlier_status = "🔴 High"
 
-
-# Privacy display
 
 if privacy_risk == "LOW":
 
@@ -557,8 +513,6 @@ with r4:
     )
 
 
-st.divider()
-
 r5, r6 = st.columns(2)
 
 with r5:
@@ -575,7 +529,28 @@ with r6:
 
 
 # =========================================================
-# DATA QUALITY DETAILS
+# DATASET OVERVIEW
+# =========================================================
+
+st.subheader("📊 Dataset Overview")
+
+c1, c2, c3 = st.columns(3)
+
+with c1:
+    st.metric("Rows", rows)
+
+with c2:
+    st.metric("Columns", columns)
+
+with c3:
+    st.metric(
+        "Duplicate Rows",
+        duplicates
+    )
+
+
+# =========================================================
+# DATA QUALITY
 # =========================================================
 
 st.subheader("🔍 Data Quality")
@@ -660,7 +635,7 @@ st.dataframe(
 
 
 # =========================================================
-# OUTLIER DETAILS
+# OUTLIER DETECTION
 # =========================================================
 
 st.subheader("🚨 Outlier Detection")
@@ -680,7 +655,7 @@ if outlier_results:
 
         st.warning(
             f"⚠️ {total_outliers} potential "
-            f"outlier values detected."
+            "outlier values detected."
         )
 
         st.caption(
@@ -722,8 +697,7 @@ if sensitive_columns:
 else:
 
     st.success(
-        "✅ No potentially sensitive "
-        "column names detected."
+        "✅ No potentially sensitive column names detected."
     )
 
 st.caption(
@@ -783,37 +757,15 @@ if numeric_columns:
                 f"{series.median():.2f}"
             )
 
-
-        # Histogram
-        hist_values, bin_edges = np.histogram(
-            series,
-            bins=10
-        )
-
-        labels = []
-
-        for i in range(
-            len(bin_edges) - 1
-        ):
-
-            labels.append(
-                f"{bin_edges[i]:.1f}–{bin_edges[i+1]:.1f}"
-            )
-
+        st.write("### Distribution")
 
         histogram_df = pd.DataFrame({
-            "Range": labels,
-            "Frequency": hist_values
+            "Value": series
         })
-
-        st.write(
-            "### Distribution"
-        )
 
         st.bar_chart(
             histogram_df,
-            x="Range",
-            y="Frequency"
+            use_container_width=True
         )
 
 else:
@@ -879,7 +831,7 @@ recommendations.append(
 
 
 # =========================================================
-# PROFESSIONAL REPORT DATA
+# PROFESSIONAL REPORT TEXT
 # =========================================================
 
 report_text = f"""
@@ -922,15 +874,13 @@ PRIVACY ASSESSMENT
 Privacy Risk: {privacy_risk}
 
 Sensitive Columns:
-{", ".join(map(str, sensitive_columns))
- if sensitive_columns else "None detected"}
+{", ".join(map(str, sensitive_columns)) if sensitive_columns else "None detected"}
 
 ==================================================
 
 BIAS ASSESSMENT
 
 Bias Status: {bias_status}
-
 """
 
 if bias_difference is not None:
@@ -984,7 +934,7 @@ for i, recommendation in enumerate(
 
 
 # =========================================================
-# PDF GENERATOR
+# PDF REPORT
 # =========================================================
 
 def create_pdf_report():
@@ -1013,13 +963,13 @@ def create_pdf_report():
 
     story.append(
         Paragraph(
-            "🛡️ DataGuardian AI",
+            "DataGuardian AI",
             title_style
         )
     )
 
     story.append(
-        Spacer(1, 15)
+        Spacer(1, 10)
     )
 
     story.append(
@@ -1043,9 +993,6 @@ def create_pdf_report():
     story.append(
         Spacer(1, 15)
     )
-
-
-    # Summary table
 
     summary_data = [
 
@@ -1072,7 +1019,6 @@ def create_pdf_report():
          f"{score:.1f}/100"]
 
     ]
-
 
     table = Table(
         summary_data,
@@ -1117,7 +1063,6 @@ def create_pdf_report():
                 (-1, -1),
                 7
             )
-
         ])
     )
 
@@ -1127,8 +1072,18 @@ def create_pdf_report():
         Spacer(1, 20)
     )
 
+    privacy_columns_text = (
+        ", ".join(map(str, sensitive_columns))
+        if sensitive_columns
+        else "None detected"
+    )
 
-    # Sections
+    bias_text = (
+        f"Maximum outcome rate difference: "
+        f"{bias_difference:.2f}%."
+        if bias_difference is not None
+        else "No binary outcome disparity was calculated."
+    )
 
     sections = [
 
@@ -1150,28 +1105,20 @@ def create_pdf_report():
             "Privacy Assessment",
             f"Privacy risk: {privacy_risk}. "
             f"Potentially sensitive columns: "
-            f"{', '.join(map(str, sensitive_columns)) "
-            if sensitive_columns else 'None detected'}."
+            f"{privacy_columns_text}."
         ),
 
         (
             "Bias Assessment",
             f"Bias status: {bias_status}. "
-            + (
-                f"Maximum outcome rate difference: "
-                f"{bias_difference:.2f}%."
-                if bias_difference is not None
-                else "No binary outcome disparity was calculated."
-            )
+            f"{bias_text}"
         ),
 
         (
             "Machine Learning Readiness",
             ml_readiness
         )
-
     ]
-
 
     for heading, body in sections:
 
@@ -1193,7 +1140,6 @@ def create_pdf_report():
             Spacer(1, 12)
         )
 
-
     story.append(
         Paragraph(
             "Recommendations",
@@ -1214,7 +1160,6 @@ def create_pdf_report():
             Spacer(1, 5)
         )
 
-
     story.append(
         Spacer(1, 15)
     )
@@ -1225,7 +1170,6 @@ def create_pdf_report():
             styles["Italic"]
         )
     )
-
 
     document.build(story)
 
@@ -1255,7 +1199,7 @@ else:
 
     st.warning(
         "PDF generation requires reportlab. "
-        "Add `reportlab` to requirements.txt."
+        "Add reportlab to requirements.txt."
     )
 
 
@@ -1290,9 +1234,8 @@ Bias status: {bias_status}
 ML readiness: {ml_readiness}
 """
 
-
     # =====================================================
-    # REAL OPENAI ANALYSIS
+    # OPENAI ANALYSIS
     # =====================================================
 
     if client is not None:
@@ -1358,7 +1301,6 @@ Do not invent information.
             f"and **{columns} columns**."
         )
 
-
         report.append(
             "## 🔍 Data Quality"
         )
@@ -1376,7 +1318,6 @@ Do not invent information.
                 "values require attention."
             )
 
-
         if duplicates == 0:
 
             report.append(
@@ -1389,7 +1330,6 @@ Do not invent information.
                 f"⚠️ {duplicates} duplicate "
                 "records detected."
             )
-
 
         report.append(
             "## 🚨 Outlier Analysis"
@@ -1413,7 +1353,6 @@ Do not invent information.
                 "✅ No potential outliers detected."
             )
 
-
         report.append(
             "## 🔐 Privacy"
         )
@@ -1435,7 +1374,6 @@ Do not invent information.
                 "column names detected."
             )
 
-
         report.append(
             "## ⚖️ Bias"
         )
@@ -1455,7 +1393,6 @@ Do not invent information.
                 "was unavailable."
             )
 
-
         report.append(
             "## 🤖 Machine Learning Readiness"
         )
@@ -1463,7 +1400,6 @@ Do not invent information.
         report.append(
             ml_readiness
         )
-
 
         report.append(
             "## 💡 Recommendations"
@@ -1475,18 +1411,13 @@ Do not invent information.
                 f"• {recommendation}"
             )
 
-
-        ai_report = "\n\n".join(
-            report
-        )
-
+        ai_report = "\n\n".join(report)
 
     # =====================================================
-    # SHOW REPORT
+    # SHOW AI REPORT
     # =====================================================
 
     st.markdown(ai_report)
-
 
     # =====================================================
     # TEXT DOWNLOAD
